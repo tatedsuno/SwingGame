@@ -235,7 +235,7 @@ function slotData(wx, wz, fixedH) {
   }
   if (!worldSlots.has(wk)) {
     worldSlots.set(wk, {
-      h: THREE.MathUtils.randFloat(20, 150),
+      h: THREE.MathUtils.randFloat(60, 450),
       color: boxColors[(Math.random() * boxColors.length) | 0],
     });
   }
@@ -282,7 +282,7 @@ for (let i = 0; i < BOX_POOL; i++) {
 }
 
 // スタート用ビル（常に固定高さ・常に存在）
-const START_H = 50;
+const START_H = 150;
 const START_SLOT = { wx: LOCAL_BUILDING_OFFS[0].x, wz: LOCAL_BUILDING_OFFS[0].z };
 const START_KEY = () => worldKey(START_SLOT.wx, START_SLOT.wz);
 let startBuilding = null;
@@ -513,9 +513,11 @@ function tryAttach(clientX, clientY) {
     player.vel.addScaledVector(anchor.clone().sub(player.pos).normalize(), pull);
   }
   attached = true;
+  onWall = false;
   wire.visible = true;
   anchorMark.visible = true;
   anchorMark.position.copy(anchor);
+  _prevVel.copy(player.vel);
   hideHint();
 }
 
@@ -550,12 +552,15 @@ function isAnchorOnCurrentSurface(p) {
 function release() {
   attached = false;
   attachObject = null;
+  _prevVel.copy(player.vel);
   wire.visible = false;
   anchorMark.visible = false;
 }
 
 // カメラ操作（右ドラッグ）の状態
-let dragging = false, lastX = 0, lastY = 0;
+let dragging = false;
+let leftMouseHeld = false;
+let lastX = 0, lastY = 0;
 let camYaw = 0, camPitch = 0.28, camDist = 18;
 let faceYaw = 0;                       // プレイヤー体の向き（WASD の基準）
 const CAM_YAW_RATE = 2.8;              // カメラの追従速度（低いほど酔いにくい）
@@ -567,20 +572,33 @@ canvas.addEventListener('pointerdown', e => {
   if (e.button === 2) {                 // 右：カメラドラッグ開始
     dragging = true; lastX = e.clientX; lastY = e.clientY;
   } else if (e.button === 0) {          // 左：ワイヤー発射
+    leftMouseHeld = true;
+    onWall = false;
     tryAttach(e.clientX, e.clientY);
   }
 });
 window.addEventListener('pointermove', e => {
   mouse.x = e.clientX; mouse.y = e.clientY;   // 照準は常に追跡
-  if (!dragging) return;
-  camYaw   -= (e.clientX - lastX) * 0.005;
-  camPitch += (e.clientY - lastY) * 0.005;
-  camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
-  lastX = e.clientX; lastY = e.clientY;
+  const rightDown = (e.buttons & 2) !== 0;    // 左押しっぱなし中の右ドラッグも検出
+  if (rightDown) {
+    if (dragging) {
+      camYaw   -= (e.clientX - lastX) * 0.005;
+      camPitch += (e.clientY - lastY) * 0.005;
+      camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
+      faceYaw = camYaw;
+    }
+    lastX = e.clientX; lastY = e.clientY;
+    dragging = true;
+  } else {
+    dragging = false;
+  }
 });
 window.addEventListener('pointerup', e => {
   if (e.button === 2) dragging = false;
-  if (e.button === 0 && attached) release();
+  if (e.button === 0) {
+    leftMouseHeld = false;
+    if (attached) release();
+  }
 });
 // ホイールでズーム（おまけ）
 canvas.addEventListener('wheel', e => {
@@ -608,19 +626,22 @@ const SPRING_DAMP = 14;   // ゴムロープの減衰（振動を抑える）
 const SPRING_REF = 30;    // 基準ロープ長（これより長いと縮む力が強くなる）
 const PLAYER_R = 0.5;     // プレイヤー半径＝幅1m（衝突・接地）
 const FLOOR = GROUND_Y + PLAYER_R;
-const RUN_MAX = 100 / 3.6; // 地上走行の最高速度（100 km/h）
+const RUN_MAX = 60 / 3.6; // 地上走行の最高速度（60 km/h）
+const RUN_ACCEL = RUN_MAX * 1.4; // 走行加速（RUN_MAX に追従）
+const GROUND_COAST_FRICTION = 10; // 入力なし時の減速
 const JUMP_V = 14;        // ジャンプ初速
 const SWING_JUMP_V = 14;  // スイング中ジャンプ：接地点方向への初速
 let grounded = false;
 let groundedByRoof = false;
 let groundedByFloor = false;
 let onWall = false;                  // 壁に張り付き中
+let wallContact = false;             // ロープ中に壁へ接触（張り付きなし）
 let wallNX = 0, wallNZ = 0;          // 壁の外法線（水平）
 let wallAnchorX = 0, wallAnchorZ = 0;
 let wallHalf = FOOT / 2;
 let wallTopY = 0;
 const WALL_SKIN = 0.18;
-const WALL_RUN_ACCEL = 50;
+const WALL_RUN_ACCEL = RUN_ACCEL;
 const WALL_Kick_OUT = 18;              // 壁から離れる水平成分
 const WALL_Kick_UP = 13;               // 蹴り上げ
 const WALL_Kick_TANG = 6;
@@ -683,6 +704,17 @@ function bodyAxes(yaw, out) {
   out.rz = -Math.sin(yaw);
 }
 const _body = { fx: 0, fz: 0, rx: 0, rz: 0 };
+
+function hasMoveInput() {
+  return keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+}
+
+// ロープ保持中に地面・屋上・壁へ接触しているか（前フレームの状態）
+function isRopeOnSurface() {
+  if (!attached) return false;
+  return groundedByFloor || groundedByRoof || onWall || wallContact
+    || player.pos.y <= FLOOR + 0.15;
+}
 
 // 体の向きに対する WASD 入力 → ワールド加速度
 function applyBodyMove(accel, dt) {
@@ -862,7 +894,7 @@ function canAttachToWall(feetY, topY) {
 
 // 前フレームの壁に近ければ張り付きを維持
 function tryKeepWallStick() {
-  if (attached || groundedByRoof || groundedByFloor) return false;
+  if (leftMouseHeld || groundedByRoof || groundedByFloor) return false;
   if (!canAttachToWall(player.pos.y - PLAYER_R, wallTopY)) return false;
   if (player.pos.y - PLAYER_R >= wallTopY - 0.15) return false;
   const ext = wallHalf + PLAYER_R;
@@ -884,7 +916,8 @@ function tryKeepWallStick() {
 function resolveCollisions() {
   groundedByRoof = false;
   groundedByFloor = false;
-  const wasOnWall = onWall;
+  wallContact = false;
+  const wasOnWall = leftMouseHeld ? false : onWall;
   onWall = false;
   const r = PLAYER_R;
   let bestWall = null;
@@ -921,6 +954,20 @@ function resolveCollisions() {
 
     // 側面の壁（屋上より下。地面付近からの接触も含む）
     if (ox > -WALL_SKIN && oz > -WALL_SKIN && canAttachToWall(feetY, topY)) {
+      if (leftMouseHeld) {
+        const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
+        if (depth > 0) {
+          if (attached) wallContact = true;
+          if (ox <= oz) {
+            const nx = dx < 0 ? -1 : 1;
+            player.pos.x = b.position.x + nx * ext;
+          } else {
+            const nz = dz < 0 ? -1 : 1;
+            player.pos.z = b.position.z + nz * ext;
+          }
+        }
+        continue;
+      }
       const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
       if (ox <= oz) {
         const nx = dx < 0 ? -1 : 1;
@@ -944,12 +991,12 @@ function resolveCollisions() {
 
   if (groundedByRoof) {
     onWall = false;
-  } else if (wasOnWall && !attached && feetY <= FLOOR + 0.25 && jumpGraceTimer <= 0) {
+  } else if (wasOnWall && !leftMouseHeld && feetY <= FLOOR + 0.25 && jumpGraceTimer <= 0) {
     player.pos.y = FLOOR;
     if (player.vel.y < 0) player.vel.y = 0;
     groundedByFloor = true;
     onWall = false;
-  } else if (bestWall && !attached && wallDetachTimer <= 0
+  } else if (bestWall && !leftMouseHeld && wallDetachTimer <= 0
       && canAttachToWall(feetY, bestWall.topY)) {
     onWall = true;
     wallNX = bestWall.nx;
@@ -959,10 +1006,10 @@ function resolveCollisions() {
     wallHalf = bestWall.half;
     wallTopY = bestWall.topY;
     snapToWallPlane();
-  } else if (!attached && tryLandOnGround()) {
+  } else if (!leftMouseHeld && tryLandOnGround()) {
     groundedByFloor = true;
     onWall = false;
-  } else if (wasOnWall && !attached && wallDetachTimer <= 0) {
+  } else if (wasOnWall && !leftMouseHeld && wallDetachTimer <= 0) {
     // 屋上に達していたら張り付きを解除
     if (player.pos.y - r >= wallTopY - 0.15) {
       onWall = false;
@@ -977,6 +1024,7 @@ function stepPhysics(dt) {
   jumpGraceTimer = Math.max(0, jumpGraceTimer - dt);
   if (attached) clipRopeAnchorToObstacles();
   const canWallRun = onWall && !groundedByRoof && !groundedByFloor;
+  const ropeOnSurface = isRopeOnSurface();
   if (spaceQueued) {
     spaceQueued = false;
     if (attached) {
@@ -987,10 +1035,19 @@ function stepPhysics(dt) {
 
   let reelRate = 0;
   if (attached) {
-    // 巻き取り速度（自動＋手動 W/S）。滑らかさのため積分ループ内で少しずつ適用
-    reelRate = AUTO_REEL + (keys['KeyW'] ? REEL_SPEED : 0) - (keys['KeyS'] ? REEL_SPEED : 0);
+    if (ropeOnSurface) {
+      reelRate = AUTO_REEL;
+      const wallRun = onWall && !groundedByRoof && !groundedByFloor;
+      if (wallRun || (wallContact && !groundedByRoof && !groundedByFloor)) {
+        applyBodyMoveOnWall(RUN_ACCEL, dt);
+      } else {
+        applyBodyMove(RUN_ACCEL, dt);
+      }
+    } else {
+      reelRate = AUTO_REEL + (keys['KeyW'] ? REEL_SPEED : 0) - (keys['KeyS'] ? REEL_SPEED : 0);
+    }
   } else {
-    const a = (grounded || canWallRun) ? (canWallRun ? WALL_RUN_ACCEL : 45) : 14;
+    const a = (grounded || canWallRun) ? (canWallRun ? WALL_RUN_ACCEL : RUN_ACCEL) : 14;
     if (canWallRun) applyBodyMoveOnWall(a, dt);
     else applyBodyMove(a, dt);
   }
@@ -1002,8 +1059,7 @@ function stepPhysics(dt) {
     else stabilizeWallVerticalVel();
 
     if (attached) {
-      // スイング中の左右操作（体の向き基準）
-      applyBodySteer(h);
+      if (!ropeOnSurface) applyBodySteer(h);
       // ロープの自然長を巻き取り（サブステップごとに少しずつ）
       ropeLength = THREE.MathUtils.clamp(ropeLength - reelRate * h, MIN_ROPE, MAX_ROPE);
       // ゴムのロープ：自然長より伸びた分だけアンカー方向へ引き戻す（減衰付き）
@@ -1026,10 +1082,10 @@ function stepPhysics(dt) {
     // 積分
     player.pos.addScaledVector(player.vel, h);
     resolveCollisions();
-    if (onWall && !attached) stabilizeWallVerticalVel();
+    if (onWall && !leftMouseHeld) stabilizeWallVerticalVel();
   }
 
-  if (onWall && !attached) snapToWallPlane();
+  if (onWall && !leftMouseHeld) snapToWallPlane();
 
   // 地面：すり抜けず着地
   if (player.pos.y < FLOOR) {
@@ -1040,10 +1096,13 @@ function stepPhysics(dt) {
   }
   grounded = !attached && (groundedByRoof || groundedByFloor || onWall);
 
-  if (grounded && jumpGraceTimer <= 0) {
-    player.vel.x *= (1 - 8 * dt);
-    player.vel.y *= (1 - 8 * dt);
-    player.vel.z *= (1 - 8 * dt);
+  const canRunCap = (grounded || ropeOnSurface) && jumpGraceTimer <= 0;
+  if (canRunCap) {
+    if (!hasMoveInput()) {
+      player.vel.x *= (1 - GROUND_COAST_FRICTION * dt);
+      player.vel.y *= (1 - GROUND_COAST_FRICTION * dt);
+      player.vel.z *= (1 - GROUND_COAST_FRICTION * dt);
+    }
     const hs = onWall
       ? Math.hypot(player.vel.x, player.vel.y, player.vel.z)
       : Math.hypot(player.vel.x, player.vel.z);
@@ -1066,13 +1125,31 @@ function fillTrail() {
   }
 }
 
+function snapCameraToPlayer() {
+  _focusTarget.set(player.pos.x, player.pos.y + 3, player.pos.z);
+  camFocus.copy(_focusTarget);
+  frameDist = camDist;
+  const picked = pickCameraYaw(chaseYaw, camPitch, camFocus, frameDist);
+  chaseYaw = camYaw = smoothCamYaw = picked.yaw;
+  buildCameraDir(smoothCamYaw, camPitch, camDir);
+  camTarget.copy(camFocus).addScaledVector(camDir, picked.dist);
+  camera.position.copy(camTarget);
+  camera.lookAt(camFocus);
+}
+
 // R キー：最初からやり直し
 function resetGame() {
   release();
+  dragging = false;
+  leftMouseHeld = false;
   player.vel.set(0, 0, 0);
   faceYaw = 0;
   camYaw = 0;
   camPitch = 0.28;
+  chaseYaw = 0;
+  smoothCamYaw = 0;
+  frameDist = camDist;
+  _prevVel.set(0, 0, 0);
   onWall = false;
   wallDetachTimer = 0;
   jumpGraceTimer = 0;
@@ -1081,6 +1158,7 @@ function resetGame() {
   resetWorld();
   player.pos.set(START_SLOT.wx, GROUND_Y + START_H + PLAYER_R, START_SLOT.wz);
   fillTrail();
+  snapCameraToPlayer();
 }
 
 // ============================================================
@@ -1090,8 +1168,73 @@ const camTarget = new THREE.Vector3();
 const camFocus = new THREE.Vector3();
 const camDir = new THREE.Vector3();
 const _focusTarget = new THREE.Vector3();
-const _camFa = new THREE.Vector3();
-let frameDist = 18;   // 平滑化したカメラ距離（自動フレーミング用）
+const _prevVel = new THREE.Vector3();
+const _camRayDir = new THREE.Vector3();
+const camRaycaster = new THREE.Raycaster();
+let frameDist = 18;   // 平滑化したカメラ距離
+let chaseYaw = 0;     // 進行方向の後方から追うヨー角
+let smoothCamYaw = 0;
+const ACCEL_PULL_K = 0.06;    // 加速度→追加距離 [m / (m/s²)]
+const ACCEL_PULL_MAX = 16;    // 追加距離の上限
+const DIST_PULL_RATE = 3.5;   // 引くときの追従速度
+const DIST_RETURN_RATE = 9;   // 戻るときの追従速度
+const CHASE_SPEED_MIN = 4;    // これ以上で進行方向追従 [m/s]
+const CHASE_SPEED_FULL = 14;  // 完全に進行方向へ [m/s]
+const CAM_CLEAR_MARGIN = 1.6;   // ビル手前で止める余白 [m]
+const CAM_MIN_DIST = 5;       // カメラの最小距離 [m]
+const CAM_YAW_SCAN = [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05]; // 障害物回避のヨー探索 [rad]
+
+function buildCameraDir(yaw, pitch, out) {
+  out.set(
+    Math.sin(yaw) * Math.cos(pitch),
+    Math.sin(pitch),
+    Math.cos(yaw) * Math.cos(pitch)
+  );
+}
+
+function cameraRayTargets() {
+  return activeBoxes.length ? activeBoxes : [];
+}
+
+// 焦点→カメラ方向のレイで、ビル手前までの安全距離を返す
+function cameraClearDist(focus, dir, maxDist) {
+  const targets = cameraRayTargets();
+  if (!targets.length || maxDist <= CAM_MIN_DIST) return maxDist;
+  _camRayDir.copy(dir).normalize();
+  camRaycaster.set(focus, _camRayDir);
+  camRaycaster.near = 0.6;
+  camRaycaster.far = maxDist;
+  const hits = camRaycaster.intersectObjects(targets, false);
+  if (!hits.length) return maxDist;
+  return Math.max(CAM_MIN_DIST, hits[0].distance - CAM_CLEAR_MARGIN);
+}
+
+// 進行方向の後方＋左右オフセットを試し、最も視界が開くヨー角を選ぶ
+function pickCameraYaw(baseYaw, pitch, focus, maxDist) {
+  let bestYaw = baseYaw;
+  buildCameraDir(baseYaw, pitch, camDir);
+  let bestDist = cameraClearDist(focus, camDir, maxDist);
+  let bestScore = bestDist - 0.01;
+
+  for (const off of CAM_YAW_SCAN) {
+    const yaw = baseYaw + off;
+    buildCameraDir(yaw, pitch, _camRayDir);
+    const clear = cameraClearDist(focus, _camRayDir, maxDist);
+    const score = clear - Math.abs(off) * 0.35;
+    if (score > bestScore) {
+      bestScore = score;
+      bestYaw = yaw;
+      bestDist = clear;
+    }
+  }
+  return { yaw: bestYaw, dist: bestDist };
+}
+
+function chaseYawFromVelocity() {
+  const hs = Math.hypot(player.vel.x, player.vel.z);
+  if (hs < CHASE_SPEED_MIN) return null;
+  return Math.atan2(-player.vel.x, -player.vel.z);
+}
 
 // 角度の最短経路で補間（急な回転を避ける）
 function lerpAngle(from, to, t) {
@@ -1102,45 +1245,50 @@ function lerpAngle(from, to, t) {
 }
 
 function updateCamera(dt) {
+  const yawFollow = Math.min(1, dt * (attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE));
+
   if (!dragging) {
-    // W/S で前後に進むとき、カメラの向きへ体をゆっくり旋回（A/D はストレイフ）
+    const velYaw = chaseYawFromVelocity();
+    let targetYaw = faceYaw;
+    if (velYaw !== null) {
+      const hs = Math.hypot(player.vel.x, player.vel.z);
+      const w = THREE.MathUtils.clamp((hs - CHASE_SPEED_MIN) / (CHASE_SPEED_FULL - CHASE_SPEED_MIN), 0, 1);
+      targetYaw = lerpAngle(faceYaw, velYaw, w);
+    }
+    chaseYaw = lerpAngle(chaseYaw, targetYaw, Math.min(1, dt * 5));
+    camYaw = lerpAngle(camYaw, chaseYaw, yawFollow);
+
     if (keys['KeyW'] || keys['KeyS']) {
       const rate = attached ? TURN_RATE * 0.55 : TURN_RATE;
       faceYaw = lerpAngle(faceYaw, camYaw, Math.min(1, dt * rate));
     }
-    const yawRate = attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE;
-    camYaw = lerpAngle(camYaw, faceYaw, Math.min(1, dt * yawRate));
     camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
   } else {
-    // ドラッグ中は手動角度を維持。離したときのスナップを防ぐ
     faceYaw = camYaw;
+    chaseYaw = camYaw;
   }
 
-  camDir.set(
-    Math.sin(camYaw) * Math.cos(camPitch),
-    Math.sin(camPitch),
-    Math.cos(camYaw) * Math.cos(camPitch)   // yaw=0 でプレイヤー後方(+Z)
-  );
-
-  // 注視点は常にプレイヤー基準で固定（横に振れないので酔いにくい）
   _focusTarget.set(player.pos.x, player.pos.y + 3, player.pos.z);
-
-  // 距離：基本は近接のまま。アンカーが画面外に出そうな時だけ必要分だけ引く
-  let targetDist = camDist;
-  if (attached) {
-    _camFa.subVectors(anchor, _focusTarget);
-    const depthA = _camFa.dot(camDir);                          // 視線奥行き方向の成分
-    const perpA = Math.sqrt(Math.max(0, _camFa.lengthSq() - depthA * depthA)); // 画面内のずれ
-    const theta = camera.fov * Math.PI / 360 * 0.85;            // 安全マージン込みの半画角
-    const need = depthA + perpA / Math.tan(theta);              // アンカーが収まる最小距離
-    targetDist = THREE.MathUtils.clamp(need, camDist, 60);
-  }
-
-  // 注視点は素早く、距離はゆっくり追従（ガクッと動かない＝酔いにくい）
   camFocus.lerp(_focusTarget, Math.min(1, dt * 4));
-  frameDist += (targetDist - frameDist) * Math.min(1, dt * 1.5);
 
-  camTarget.copy(camFocus).addScaledVector(camDir, frameDist);
+  const invDt = 1 / Math.max(dt, 1e-4);
+  const accelMag = tmp.copy(player.vel).sub(_prevVel).multiplyScalar(invDt).length();
+  _prevVel.copy(player.vel);
+  const pullExtra = THREE.MathUtils.clamp(accelMag * ACCEL_PULL_K, 0, ACCEL_PULL_MAX);
+  const targetDist = camDist + pullExtra;
+  const distRate = pullExtra > 0.5 ? DIST_PULL_RATE : DIST_RETURN_RATE;
+  frameDist += (targetDist - frameDist) * Math.min(1, dt * distRate);
+
+  const picked = pickCameraYaw(dragging ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
+  const aimYaw = dragging ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
+  if (!dragging) smoothCamYaw = aimYaw;
+
+  buildCameraDir(aimYaw, camPitch, camDir);
+  const safeDist = dragging
+    ? cameraClearDist(camFocus, camDir, frameDist)
+    : picked.dist;
+
+  camTarget.copy(camFocus).addScaledVector(camDir, safeDist);
   camera.position.lerp(camTarget, Math.min(1, dt * 4));
   camera.lookAt(camFocus);
 }
