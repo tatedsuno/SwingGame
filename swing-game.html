@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>スイングゲーム 箱庭</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e1a; }
+  #app { width: 100%; height: 100%; display: block; cursor: crosshair; }
+
+  #hud {
+    position: fixed; top: 16px; left: 16px;
+    color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.6; text-shadow: 0 1px 3px #000;
+    pointer-events: none; user-select: none;
+  }
+  #hud .title { font-size: 18px; font-weight: 700; color: #7fd0ff; }
+  #hud .key { color: #ffd479; font-weight: 600; }
+
+  #stats {
+    position: fixed; top: 16px; right: 16px; text-align: right;
+    color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
+    text-shadow: 0 1px 3px #000; pointer-events: none; user-select: none;
+  }
+  #stats .big { font-size: 28px; font-weight: 700; color: #7fffd0; }
+  #stats .sub { font-size: 13px; opacity: 0.8; }
+
+  /* マウス追従の照準（射程内=緑 / 射程外=赤） */
+  #reticle {
+    position: fixed; left: 0; top: 0; width: 26px; height: 26px;
+    margin: -13px 0 0 -13px; border-radius: 50%;
+    border: 2px solid rgba(127,255,160,0.95); box-shadow: 0 0 8px rgba(0,0,0,0.6);
+    pointer-events: none; transition: border-color .08s, opacity .1s; opacity: 0.85;
+  }
+  #reticle::after {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: #fff;
+  }
+  #reticle.out { border-color: rgba(255,95,95,0.8); opacity: 0.5; }
+  #reticle.locked { border-color: rgba(255,212,121,0.95); opacity: 1; }
+
+  #hint {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    color: #fff; font-family: "Segoe UI", system-ui, sans-serif; font-size: 15px;
+    background: rgba(20,30,55,0.7); padding: 8px 18px; border-radius: 20px;
+    text-shadow: 0 1px 2px #000; pointer-events: none; user-select: none;
+    transition: opacity .4s; border: 1px solid rgba(127,208,255,0.3);
+  }
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+
+<div id="hud">
+  <div class="title">🕸️ SWING SANDBOX</div>
+  <div><span class="key">左長押し</span>：ワイヤー発射＆スイング ／ <span class="key">離す</span>：手放す</div>
+  <div><span class="key">スイング中</span>：自動で巻き取り（<span class="key">W/S</span>で手動調整）</div>
+  <div><span class="key">WASD</span>：体の向きに対して移動（壁：W/S上下・A/Dは画面左右） ／ <span class="key">Space</span>：ジャンプ</div>
+  <div><span class="key">右ドラッグ</span>：カメラ ／ <span class="key">R</span>：最初から</div>
+</div>
+
+<div id="stats">
+  <div class="big" id="alt">0 m</div>
+  <div class="sub" id="speed">0 km/h</div>
+</div>
+
+<div id="reticle"></div>
+<div id="hint">自由に動き回れる箱庭！ ビルや地面を <b>左クリック長押し</b>で掴もう</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ============================================================
+//  基本セットアップ
+// ============================================================
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a1228);
+scene.fog = new THREE.Fog(0x0a1228, 120, 520);
+
+const camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 3000);
+
+// ライト
+scene.add(new THREE.HemisphereLight(0x88aaff, 0x182038, 0.95));
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 700;
+sun.shadow.camera.left = -200; sun.shadow.camera.right = 200;
+sun.shadow.camera.top = 240; sun.shadow.camera.bottom = -240;
+scene.add(sun);
+const sunTarget = new THREE.Object3D();
+scene.add(sunTarget);
+sun.target = sunTarget;   // 太陽（影）をプレイヤーに追従させる
+
+// =====（1ユニット = 1メートル）======================================
+// 箱庭：プレイヤー中心に一定範囲を自動生成
+const GROUND_Y = 0;
+const GEN_RADIUS = 260;              // プレイヤー周囲の生成半径
+const GROUND_PAD = 60;
+const GROUND_SIZE = (GEN_RADIUS + GROUND_PAD) * 2;
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
+  new THREE.MeshStandardMaterial({ color: 0x141a26, roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = GROUND_Y;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// --- 道路網：1車線=6m / 大通り=3車線×2=36m / 普通=2車線×2=24m ---
+const LANE = 6;
+const ROAD_BIG = 3 * LANE * 2;     // 大通り 36m
+const ROAD_SMALL = 2 * LANE * 2;   // 普通の道 24m
+const FOOT = 26;                   // ビルの footprint（道路幅をちょうど確保）
+const PERIOD = 2 * FOOT + ROAD_SMALL + ROAD_BIG;   // 街区の1周期 = 112m
+const HALF = ROAD_BIG / 2 + FOOT / 2;              // 中心の大通りから最初のビルまで = 31
+
+// 1周期ブロック内のビル配置（街区グリッドを維持）
+const LOCAL_BUILDING_OFFS = [
+  { x: HALF, z: HALF },
+  { x: HALF, z: -(HALF + FOOT + ROAD_SMALL) },
+  { x: -(HALF + FOOT + ROAD_SMALL), z: HALF },
+  { x: -(HALF + FOOT + ROAD_SMALL), z: -(HALF + FOOT + ROAD_SMALL) },
+];
+
+// 道路（中心線）の座標列。big=大通り / small=普通
+function roadAxis(maxAbs) {
+  const out = [];
+  for (let x = 0; x <= maxAbs; x += PERIOD) {
+    out.push({ c: x, w: ROAD_BIG }); if (x > 0) out.push({ c: -x, w: ROAD_BIG });
+  }
+  for (let x = HALF + FOOT / 2 + ROAD_SMALL / 2; x <= maxAbs; x += PERIOD) {
+    out.push({ c: x, w: ROAD_SMALL }); out.push({ c: -x, w: ROAD_SMALL });
+  }
+  return out;
+}
+
+// 道路メッシュ（プレイヤー周囲へスナップ配置）
+const asphaltMat = new THREE.MeshStandardMaterial({ color: 0x2a3140, roughness: 1 });
+const lineMat = new THREE.MeshBasicMaterial({ color: 0xc9a23a });
+const avenues = [];   // 南北の道
+const streets = [];   // 東西の道
+for (const r of roadAxis(GEN_RADIUS)) {
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(r.w, GROUND_SIZE), asphaltMat);
+  road.rotation.x = -Math.PI / 2;
+  road.userData.localX = r.c;
+  road.userData.isLine = false;
+  road.receiveShadow = true;
+  scene.add(road);
+  avenues.push(road);
+  const line = new THREE.Mesh(new THREE.PlaneGeometry(0.4, GROUND_SIZE), lineMat);
+  line.rotation.x = -Math.PI / 2;
+  line.userData.localX = r.c;
+  line.userData.isLine = true;
+  scene.add(line);
+  avenues.push(line);
+}
+for (const r of roadAxis(GEN_RADIUS)) {
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(GROUND_SIZE, r.w), asphaltMat);
+  road.rotation.x = -Math.PI / 2;
+  road.userData.localZ = r.c;
+  road.receiveShadow = true;
+  scene.add(road);
+  streets.push(road);
+}
+
+function updateRoads() {
+  for (const m of avenues) {
+    const lx = m.userData.localX;
+    const snapX = Math.round((player.pos.x - lx) / PERIOD) * PERIOD;
+    const y = m.userData.isLine ? GROUND_Y + 0.05 : GROUND_Y + 0.04;
+    m.position.set(snapX + lx, y, player.pos.z);
+  }
+  for (const m of streets) {
+    const lz = m.userData.localZ;
+    const snapZ = Math.round((player.pos.z - lz) / PERIOD) * PERIOD;
+    m.position.set(player.pos.x, GROUND_Y + 0.03, snapZ + lz);
+  }
+}
+
+// ============================================================
+//  プレイヤー（スフィア）
+// ============================================================
+const player = {
+  pos: new THREE.Vector3(0, 45, 0),
+  vel: new THREE.Vector3(0, 0, 0),
+};
+const playerMesh = new THREE.Mesh(
+  new THREE.SphereGeometry(0.5, 20, 14),   // 幅1m
+  new THREE.MeshStandardMaterial({ color: 0xff4757, roughness: 0.4, metalness: 0.1, emissive: 0x551015 })
+);
+playerMesh.castShadow = true;
+scene.add(playerMesh);
+
+// プレイヤーの軌跡（トレイル）
+const TRAIL_LEN = 40;
+const trailPos = new Float32Array(TRAIL_LEN * 3);
+const trailGeo = new THREE.BufferGeometry();
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trail = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0xff6b81, transparent: true, opacity: 0.5 }));
+scene.add(trail);
+
+// ============================================================
+//  ビル（プレイヤー周囲へ動的生成）
+// ============================================================
+const boxes = [];
+const activeBoxes = [];              // visible のみ（レイ・衝突用）
+const boxColors = [0x4cd6c1, 0x6ba8ff, 0xffd479, 0xc77dff, 0x7fffa1];
+const worldSlots = new Map();        // worldKey → { h, color }（座標ごとに高さを固定）
+const BOX_POOL = 160;
+
+function worldKey(wx, wz) {
+  return Math.round(wx) + '|' + Math.round(wz);
+}
+
+function slotData(wx, wz, fixedH) {
+  const wk = worldKey(wx, wz);
+  if (fixedH != null) {
+    const data = { h: fixedH, color: boxColors[1] };
+    worldSlots.set(wk, data);
+    return data;
+  }
+  if (!worldSlots.has(wk)) {
+    worldSlots.set(wk, {
+      h: THREE.MathUtils.randFloat(20, 150),
+      color: boxColors[(Math.random() * boxColors.length) | 0],
+    });
+  }
+  return worldSlots.get(wk);
+}
+
+function applyBuilding(box, wx, wz, data) {
+  box.visible = true;
+  box.position.set(wx, GROUND_Y + data.h / 2, wz);
+  box.scale.set(FOOT, data.h, FOOT);
+  box.material.color.setHex(data.color);
+  box.userData.worldKey = worldKey(wx, wz);
+  box.userData.half = FOOT / 2;
+  box.userData.top = GROUND_Y + data.h;
+}
+
+function hideBuilding(box) {
+  box.visible = false;
+  box.userData.worldKey = null;
+  box.userData.half = 0;
+  box.userData.top = -9999;
+  box.position.y = -5000;
+}
+
+function rebuildActiveBoxes() {
+  activeBoxes.length = 0;
+  for (const b of boxes) if (b.visible) activeBoxes.push(b);
+}
+
+function placeBuilding(box, slot, fixedH) {
+  applyBuilding(box, slot.wx, slot.wz, slotData(slot.wx, slot.wz, fixedH));
+}
+
+const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+for (let i = 0; i < BOX_POOL; i++) {
+  const box = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.05 }));
+  box.castShadow = true;
+  box.receiveShadow = true;
+  box.userData.worldKey = null;
+  box.userData.top = -9999;
+  hideBuilding(box);
+  scene.add(box);
+  boxes.push(box);
+}
+
+// スタート用ビル（常に固定高さ・常に存在）
+const START_H = 50;
+const START_SLOT = { wx: LOCAL_BUILDING_OFFS[0].x, wz: LOCAL_BUILDING_OFFS[0].z };
+const START_KEY = () => worldKey(START_SLOT.wx, START_SLOT.wz);
+let startBuilding = null;
+
+function ensureStartBuilding() {
+  slotData(START_SLOT.wx, START_SLOT.wz, START_H);
+  if (!startBuilding) startBuilding = boxes[0];
+  placeBuilding(startBuilding, START_SLOT, START_H);
+}
+
+function buildingCoordsInRange(min, max, axis) {
+  const out = new Set();
+  const p0 = Math.floor(min / PERIOD) - 1;
+  const p1 = Math.ceil(max / PERIOD) + 1;
+  for (let p = p0; p <= p1; p++) {
+    const base = p * PERIOD;
+    for (const off of LOCAL_BUILDING_OFFS) {
+      const c = base + (axis === 'x' ? off.x : off.z);
+      if (c >= min && c <= max) out.add(c);
+    }
+  }
+  return out;
+}
+
+function collectNeededSlots() {
+  const needed = new Map();
+  const margin = FOOT;
+  const xs = buildingCoordsInRange(
+    player.pos.x - GEN_RADIUS - margin, player.pos.x + GEN_RADIUS + margin, 'x');
+  const zs = buildingCoordsInRange(
+    player.pos.z - GEN_RADIUS - margin, player.pos.z + GEN_RADIUS + margin, 'z');
+  for (const wx of xs) {
+    for (const wz of zs) {
+      if (Math.hypot(wx - player.pos.x, wz - player.pos.z) <= GEN_RADIUS) {
+        const wk = worldKey(wx, wz);
+        if (!needed.has(wk)) needed.set(wk, { wx, wz });
+      }
+    }
+  }
+  // スタートビルはプレイヤー位置に関係なく常に存在
+  const sk = START_KEY();
+  if (!needed.has(sk)) needed.set(sk, { wx: START_SLOT.wx, wz: START_SLOT.wz });
+  return needed;
+}
+
+function isAnchorBuilding(box) {
+  if (!attached || !box.visible) return false;
+  const ext = box.userData.half;
+  return Math.abs(box.position.x - anchor.x) <= ext
+    && Math.abs(box.position.z - anchor.z) <= ext
+    && anchor.y <= box.userData.top + 2;
+}
+
+function updateSandboxWorld(force) {
+  const needed = collectNeededSlots();
+  const assigned = new Map();
+  const orphans = [];
+
+  for (const b of boxes) {
+    if (isAnchorBuilding(b)) {
+      const wk = b.userData.worldKey;
+      if (wk) assigned.set(wk, b);
+      continue;
+    }
+    const k = b.userData.worldKey;
+    if (b === startBuilding) {
+      assigned.set(START_KEY(), b);
+      continue;
+    }
+    if (k && needed.has(k)) {
+      if (assigned.has(k)) {
+        hideBuilding(b);
+        orphans.push(b);
+      } else {
+        assigned.set(k, b);
+      }
+    } else {
+      hideBuilding(b);
+      orphans.push(b);
+    }
+  }
+
+  for (const [k, slot] of needed) {
+    if (assigned.has(k)) {
+      if (force) {
+        const b = assigned.get(k);
+        const isStart = slot.wx === START_SLOT.wx && slot.wz === START_SLOT.wz;
+        placeBuilding(b, slot, isStart ? START_H : null);
+        if (isStart) startBuilding = b;
+      }
+      continue;
+    }
+    const b = orphans.pop();
+    if (!b) break;
+    const isStart = slot.wx === START_SLOT.wx && slot.wz === START_SLOT.wz;
+    placeBuilding(b, slot, isStart ? START_H : null);
+    assigned.set(k, b);
+    if (isStart) startBuilding = b;
+  }
+
+  ensureStartBuilding();
+
+  rebuildActiveBoxes();
+}
+
+function resetWorld() {
+  worldSlots.clear();
+  for (const b of boxes) hideBuilding(b);
+  startBuilding = null;
+  updateSandboxWorld(true);
+  updateRoads();
+}
+
+// ============================================================
+//  ワイヤー（太い円柱で見やすく）
+// ============================================================
+const wire = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.12, 0.12, 1, 6),   // 長さ1の単位円柱を scale.y で伸ばす
+  new THREE.MeshBasicMaterial({ color: 0xffffff })
+);
+wire.visible = false;
+scene.add(wire);
+
+// アンカー地点のマーカー
+const anchorMark = new THREE.Mesh(
+  new THREE.SphereGeometry(0.7, 14, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffd479 })
+);
+anchorMark.visible = false;
+scene.add(anchorMark);
+
+// ============================================================
+//  入力（クリックでワイヤー発射 / 離すと手放す）
+// ============================================================
+const raycaster = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+
+let attached = false;
+const anchor = new THREE.Vector3();
+let ropeLength = 0;
+
+const MAX_ROPE = 100000;      // S で伸ばせる上限（射程は無限）
+const reticleEl = document.getElementById('reticle');
+const hudHint = document.getElementById('hint');
+const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+let missFlash = 0;            // ミスショットの赤フラッシュ残り時間
+
+// マウス位置へレイキャストし、掴める点（ビル・地面）を返す。無ければ null
+function aimAt(clientX, clientY) {
+  ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
+  const targets = activeBoxes.length ? [...activeBoxes, ground] : [ground];
+  const hits = raycaster.intersectObjects(targets, false);
+  if (hits.length === 0) return null;
+  return hits[0].point;
+}
+
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    spaceQueued = true;
+  }
+  if (e.code === 'KeyR') resetGame();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+function tryAttach(clientX, clientY) {
+  const p = aimAt(clientX, clientY);
+  if (!p) { missFlash = 0.18; return; }
+  anchor.copy(p);
+  ropeLength = player.pos.distanceTo(anchor);
+  // 接地中と同じ面への発射は初速の縮みを入れない
+  if (!isAnchorOnCurrentSurface(p)) {
+    const pull = THREE.MathUtils.clamp(ropeLength * 0.6, 14, 55);
+    player.vel.addScaledVector(anchor.clone().sub(player.pos).normalize(), pull);
+  }
+  attached = true;
+  wire.visible = true;
+  anchorMark.visible = true;
+  anchorMark.position.copy(anchor);
+  hideHint();
+}
+
+// 今立っている面と同じ面へロープを撃ったか
+function isAnchorOnCurrentSurface(p) {
+  if (groundedByFloor && p.y <= GROUND_Y + 0.55) return true;
+
+  if (groundedByRoof) {
+    for (const b of activeBoxes) {
+      const topY = b.userData.top;
+      const standY = topY + PLAYER_R;
+      if (Math.abs(player.pos.y - standY) > 0.45) continue;
+      const ext = b.userData.half;
+      if (Math.abs(player.pos.x - b.position.x) > ext + 0.3) continue;
+      if (Math.abs(player.pos.z - b.position.z) > ext + 0.3) continue;
+      if (Math.abs(p.y - topY) > 0.65) continue;
+      if (Math.abs(p.x - b.position.x) <= ext + 0.5 && Math.abs(p.z - b.position.z) <= ext + 0.5)
+        return true;
+    }
+  }
+
+  if (onWall) {
+    const ext = wallHalf;
+    const playerPlane = (player.pos.x - wallAnchorX) * wallNX + (player.pos.z - wallAnchorZ) * wallNZ;
+    const anchorPlane = (p.x - wallAnchorX) * wallNX + (p.z - wallAnchorZ) * wallNZ;
+    if (Math.abs(playerPlane - (ext + PLAYER_R)) < 0.5 && Math.abs(anchorPlane - ext) < 1.2)
+      return true;
+  }
+
+  return false;
+}
+function release() {
+  attached = false;
+  wire.visible = false;
+  anchorMark.visible = false;
+}
+
+// カメラ操作（右ドラッグ）の状態
+let dragging = false, lastX = 0, lastY = 0;
+let camYaw = 0, camPitch = 0.28, camDist = 18;
+let faceYaw = 0;                       // プレイヤー体の向き（WASD の基準）
+const CAM_YAW_RATE = 2.8;              // カメラの追従速度（低いほど酔いにくい）
+const TURN_RATE = 2.2;                 // W/S 時にカメラ方向へ体を向ける速度
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (e.button === 2) {                 // 右：カメラドラッグ開始
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+  } else if (e.button === 0) {          // 左：ワイヤー発射
+    tryAttach(e.clientX, e.clientY);
+  }
+});
+window.addEventListener('pointermove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;   // 照準は常に追跡
+  if (!dragging) return;
+  camYaw   -= (e.clientX - lastX) * 0.005;
+  camPitch += (e.clientY - lastY) * 0.005;
+  camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
+  lastX = e.clientX; lastY = e.clientY;
+});
+window.addEventListener('pointerup', e => {
+  if (e.button === 2) dragging = false;
+  if (e.button === 0 && attached) release();
+});
+// ホイールでズーム（おまけ）
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  camDist = THREE.MathUtils.clamp(camDist + e.deltaY * 0.03, 6, 80);
+}, { passive: false });
+
+let hintHidden = false;
+function hideHint() {
+  if (hintHidden) return;
+  hintHidden = true;
+  document.getElementById('hint').style.opacity = '0';
+}
+
+// ============================================================
+//  物理：重力 ＋ 距離拘束（振り子）
+// ============================================================
+const GRAVITY = new THREE.Vector3(0, -26, 0);
+const MIN_ROPE = 4;
+const REEL_SPEED = 26;    // W/S での手動の伸縮スピード
+const AUTO_REEL = 2.5;    // 掴んでいる間じわっと自動で巻き取る（控えめ＝振り子を保つ）
+const STEER = 16;         // スイング中の左右操作の加速度
+const SPRING_K = 420;     // ゴムロープの硬さの基準（大きいほど伸びにくい）
+const SPRING_DAMP = 14;   // ゴムロープの減衰（振動を抑える）
+const SPRING_REF = 30;    // 基準ロープ長（これより長いと縮む力が強くなる）
+const PLAYER_R = 0.5;     // プレイヤー半径＝幅1m（衝突・接地）
+const FLOOR = GROUND_Y + PLAYER_R;
+const RUN_MAX = 14;       // 地上走行の最高速度（m/s）
+const JUMP_V = 14;        // ジャンプ初速
+let grounded = false;
+let groundedByRoof = false;
+let groundedByFloor = false;
+let onWall = false;                  // 壁に張り付き中
+let wallNX = 0, wallNZ = 0;          // 壁の外法線（水平）
+let wallAnchorX = 0, wallAnchorZ = 0;
+let wallHalf = FOOT / 2;
+let wallTopY = 0;
+const WALL_SKIN = 0.18;
+const WALL_RUN_ACCEL = 50;
+const WALL_Kick_OUT = 18;              // 壁から離れる水平成分
+const WALL_Kick_UP = 13;               // 蹴り上げ
+const WALL_Kick_TANG = 6;
+let wallDetachTimer = 0;
+let jumpGraceTimer = 0;              // ジャンプ直後は着地スナップを無効化
+let spaceQueued = false;             // Space は押した瞬間だけジャンプ
+const tmp = new THREE.Vector3();
+
+// faceYaw から体の前方向・右方向（XZ 平面）を取得
+function bodyAxes(yaw, out) {
+  out.fx = -Math.sin(yaw);
+  out.fz = -Math.cos(yaw);
+  out.rx = Math.cos(yaw);
+  out.rz = -Math.sin(yaw);
+}
+const _body = { fx: 0, fz: 0, rx: 0, rz: 0 };
+
+// 体の向きに対する WASD 入力 → ワールド加速度
+function applyBodyMove(accel, dt) {
+  let bx = 0, bz = 0;
+  if (keys['KeyW']) bz += 1;
+  if (keys['KeyS']) bz -= 1;
+  if (keys['KeyA']) bx -= 1;
+  if (keys['KeyD']) bx += 1;
+  const blen = Math.hypot(bx, bz);
+  if (blen < 1e-6) return;
+  bx /= blen;
+  bz /= blen;
+  bodyAxes(faceYaw, _body);
+  player.vel.x += (bx * _body.rx + bz * _body.fx) * accel * dt;
+  player.vel.z += (bx * _body.rz + bz * _body.fz) * accel * dt;
+}
+
+// スイング中の左右操作（体の右方向）
+function applyBodySteer(dt) {
+  let sx = 0;
+  if (keys['KeyA']) sx -= 1;
+  if (keys['KeyD']) sx += 1;
+  if (sx === 0) return;
+  bodyAxes(faceYaw, _body);
+  player.vel.x += _body.rx * sx * STEER * dt;
+  player.vel.z += _body.rz * sx * STEER * dt;
+}
+
+// 壁面上の移動（W/S=上下、A/D=カメラ基準の左右）
+function wallCamTangent() {
+  const rx = Math.cos(camYaw), rz = -Math.sin(camYaw);
+  const dot = rx * wallNX + rz * wallNZ;
+  let tx = rx - dot * wallNX;
+  let tz = rz - dot * wallNZ;
+  const len = Math.hypot(tx, tz);
+  if (len < 1e-4) {
+    // カメラが壁正面を向いているときは壁の水平接線へフォールバック
+    tx = -wallNZ;
+    tz = wallNX;
+    const fl = Math.hypot(tx, tz);
+    if (fl < 1e-4) return null;
+    tx /= fl; tz /= fl;
+  } else {
+    tx /= len; tz /= len;
+  }
+  return { x: tx, z: tz };
+}
+
+function applyBodyMoveOnWall(accel, dt) {
+  let mx = 0, my = 0, mz = 0;
+  if (keys['KeyW']) my += 1;
+  if (keys['KeyS']) my -= 1;
+  let side = 0;
+  if (keys['KeyA']) side -= 1;
+  if (keys['KeyD']) side += 1;
+  if (side !== 0) {
+    const tang = wallCamTangent();
+    if (tang) { mx += tang.x * side; mz += tang.z * side; }
+  }
+  const len = Math.hypot(mx, my, mz);
+  if (len < 1e-6) return;
+  player.vel.x += (mx / len) * accel * dt;
+  player.vel.y += (my / len) * accel * dt;
+  player.vel.z += (mz / len) * accel * dt;
+}
+
+// 壁を蹴って離れるジャンプ
+function wallKickJump() {
+  onWall = false;
+  wallDetachTimer = 0.45;
+
+  // 壁へ向かう速度を消してから蹴る
+  const vn = player.vel.x * wallNX + player.vel.z * wallNZ;
+  if (vn < 0) {
+    player.vel.x -= vn * wallNX;
+    player.vel.z -= vn * wallNZ;
+  }
+  if (player.vel.y < 0) player.vel.y = 0;
+
+  let tx = 0, tz = 0;
+  const side = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  if (side !== 0) {
+    const tang = wallCamTangent();
+    if (tang) { tx = tang.x * side * WALL_Kick_TANG; tz = tang.z * side * WALL_Kick_TANG; }
+  }
+
+  player.vel.set(
+    wallNX * WALL_Kick_OUT + tx,
+    WALL_Kick_UP,
+    wallNZ * WALL_Kick_OUT + tz
+  );
+  jumpGraceTimer = 0.22;
+}
+
+function performJump() {
+  if (onWall && !groundedByRoof && !groundedByFloor) {
+    wallKickJump();
+  } else {
+    player.vel.y = JUMP_V;
+    jumpGraceTimer = 0.22;
+    onWall = false;
+  }
+  grounded = false;
+}
+
+// ロープを保持したままジャンプ（スイング中の Space）
+function swingJump() {
+  player.vel.y = Math.max(player.vel.y, JUMP_V);
+  jumpGraceTimer = 0.22;
+}
+
+// 壁の垂直速度：入力がないときだけ止める（W/S の移動を妨げない）
+function stabilizeWallVerticalVel() {
+  if (!keys['KeyW'] && !keys['KeyS']) player.vel.y = 0;
+  else if (!keys['KeyS'] && player.vel.y < 0) player.vel.y = 0;
+  else if (!keys['KeyW'] && player.vel.y > 0) player.vel.y = 0;
+}
+
+// 壁面へ張り付け（法線方向の速度を打ち消し＋位置を壁面に固定）
+function snapToWallPlane() {
+  if (wallNX !== 0) player.pos.x = wallAnchorX + wallNX * (wallHalf + PLAYER_R);
+  else player.pos.z = wallAnchorZ + wallNZ * (wallHalf + PLAYER_R);
+  const vn = player.vel.x * wallNX + player.vel.z * wallNZ;
+  if (vn < 0) {
+    player.vel.x -= vn * wallNX;
+    player.vel.z -= vn * wallNZ;
+  }
+  stabilizeWallVerticalVel();
+}
+
+// 地面に着地（屋上と同様にスナップして歩行へ遷移）
+function tryLandOnGround() {
+  if (jumpGraceTimer > 0) return false;
+  const feetY = player.pos.y - PLAYER_R;
+  if (feetY > FLOOR + 0.25) return false;
+  if (player.vel.y > 0.5) return false;
+  player.pos.y = FLOOR;
+  player.vel.y = 0;
+  onWall = false;
+  return true;
+}
+
+// 屋上に乗っているか（足元が屋上面付近でビル上）
+function tryLandOnRoof(b, ox, oz) {
+  if (jumpGraceTimer > 0) return false;
+  const topY = b.userData.top;
+  const r = PLAYER_R;
+  const roofY = topY + r;
+  const feetY = player.pos.y - r;
+  if (ox <= -WALL_SKIN || oz <= -WALL_SKIN) return false;
+  if (feetY < topY - 0.2) return false;
+  if (feetY > topY + 0.4) return false;
+  player.pos.y = roofY;
+  player.vel.y = 0;
+  groundedByRoof = true;
+  onWall = false;
+  return true;
+}
+
+// この高さなら壁張り付き可能か（屋上・ジャンプ直後は不可）
+function canAttachToWall(feetY, topY) {
+  if (jumpGraceTimer > 0) return false;
+  if (feetY >= topY - 0.15) return false;
+  return true;
+}
+
+// 前フレームの壁に近ければ張り付きを維持
+function tryKeepWallStick() {
+  if (attached || groundedByRoof || groundedByFloor) return false;
+  if (!canAttachToWall(player.pos.y - PLAYER_R, wallTopY)) return false;
+  if (player.pos.y - PLAYER_R >= wallTopY - 0.15) return false;
+  const ext = wallHalf + PLAYER_R;
+  const dx = player.pos.x - wallAnchorX;
+  const dz = player.pos.z - wallAnchorZ;
+  if (wallNX !== 0) {
+    if (Math.abs(dz) > ext + WALL_SKIN) return false;
+    if (Math.abs(Math.abs(dx) - ext) > WALL_SKIN * 2) return false;
+  } else {
+    if (Math.abs(dx) > ext + WALL_SKIN) return false;
+    if (Math.abs(Math.abs(dz) - ext) > WALL_SKIN * 2) return false;
+  }
+  onWall = true;
+  snapToWallPlane();
+  return true;
+}
+
+// ビル(AABB)との衝突：屋上着地・壁張り付き
+function resolveCollisions() {
+  groundedByRoof = false;
+  groundedByFloor = false;
+  const wasOnWall = onWall;
+  onWall = false;
+  const r = PLAYER_R;
+  let bestWall = null;
+
+  for (const b of activeBoxes) {
+    const topY = b.userData.top;
+    const half = b.userData.half;
+    const ext = half + r;
+    const dx = player.pos.x - b.position.x;
+    const dz = player.pos.z - b.position.z;
+    const ox = ext - Math.abs(dx);
+    const oz = ext - Math.abs(dz);
+    const onFootprint = ox > -WALL_SKIN && oz > -WALL_SKIN;
+
+    if (!onFootprint) continue;
+
+    const feetY = player.pos.y - r;
+    const roofY = topY + r;
+
+    // 屋上歩行・壁登りからの屋上遷移
+    if (tryLandOnRoof(b, ox, oz)) continue;
+
+    // 壁登りで屋上を超えた：水平方向がビル上なら屋上へスナップ
+    if (wasOnWall && feetY <= topY + 0.5 && player.pos.y + r >= topY - 0.1) {
+      player.pos.y = roofY;
+      player.vel.y = 0;
+      groundedByRoof = true;
+      onWall = false;
+      continue;
+    }
+
+    // 足が屋上より十分上（空中）→ このビルでは壁判定しない
+    if (feetY > topY + 0.35) continue;
+
+    // 側面の壁（屋上より下。地面付近からの接触も含む）
+    if (ox > -WALL_SKIN && oz > -WALL_SKIN && canAttachToWall(feetY, topY)) {
+      const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
+      if (ox <= oz) {
+        const nx = dx < 0 ? -1 : 1;
+        player.pos.x = b.position.x + nx * ext;
+        if (nx * player.vel.x < 0) player.vel.x = 0;
+        if (!bestWall || depth > bestWall.depth) {
+          bestWall = { nx, nz: 0, depth, bx: b.position.x, bz: b.position.z, half, topY };
+        }
+      } else {
+        const nz = dz < 0 ? -1 : 1;
+        player.pos.z = b.position.z + nz * ext;
+        if (nz * player.vel.z < 0) player.vel.z = 0;
+        if (!bestWall || depth > bestWall.depth) {
+          bestWall = { nx: 0, nz, depth, bx: b.position.x, bz: b.position.z, half, topY };
+        }
+      }
+    }
+  }
+
+  const feetY = player.pos.y - r;
+
+  if (groundedByRoof) {
+    onWall = false;
+  } else if (wasOnWall && !attached && feetY <= FLOOR + 0.25 && jumpGraceTimer <= 0) {
+    player.pos.y = FLOOR;
+    if (player.vel.y < 0) player.vel.y = 0;
+    groundedByFloor = true;
+    onWall = false;
+  } else if (bestWall && !attached && wallDetachTimer <= 0
+      && canAttachToWall(feetY, bestWall.topY)) {
+    onWall = true;
+    wallNX = bestWall.nx;
+    wallNZ = bestWall.nz;
+    wallAnchorX = bestWall.bx;
+    wallAnchorZ = bestWall.bz;
+    wallHalf = bestWall.half;
+    wallTopY = bestWall.topY;
+    snapToWallPlane();
+  } else if (!attached && tryLandOnGround()) {
+    groundedByFloor = true;
+    onWall = false;
+  } else if (wasOnWall && !attached && wallDetachTimer <= 0) {
+    // 屋上に達していたら張り付きを解除
+    if (player.pos.y - r >= wallTopY - 0.15) {
+      onWall = false;
+    } else {
+      tryKeepWallStick();
+    }
+  }
+}
+
+function stepPhysics(dt) {
+  wallDetachTimer = Math.max(0, wallDetachTimer - dt);
+  jumpGraceTimer = Math.max(0, jumpGraceTimer - dt);
+  const canWallRun = onWall && !groundedByRoof && !groundedByFloor;
+  if (spaceQueued) {
+    spaceQueued = false;
+    if (attached) swingJump();
+    else if (grounded || canWallRun) performJump();
+  }
+
+  let reelRate = 0;
+  if (attached) {
+    // 巻き取り速度（自動＋手動 W/S）。滑らかさのため積分ループ内で少しずつ適用
+    reelRate = AUTO_REEL + (keys['KeyW'] ? REEL_SPEED : 0) - (keys['KeyS'] ? REEL_SPEED : 0);
+  } else {
+    const a = (grounded || canWallRun) ? (canWallRun ? WALL_RUN_ACCEL : 45) : 14;
+    if (canWallRun) applyBodyMoveOnWall(a, dt);
+    else applyBodyMove(a, dt);
+  }
+
+  const SUB = 12;
+  const h = dt / SUB;
+  for (let i = 0; i < SUB; i++) {
+    if (!onWall) player.vel.addScaledVector(GRAVITY, h);
+    else stabilizeWallVerticalVel();
+
+    if (attached) {
+      // スイング中の左右操作（体の向き基準）
+      applyBodySteer(h);
+      // ロープの自然長を巻き取り（サブステップごとに少しずつ）
+      ropeLength = THREE.MathUtils.clamp(ropeLength - reelRate * h, MIN_ROPE, MAX_ROPE);
+      // ゴムのロープ：自然長より伸びた分だけアンカー方向へ引き戻す（減衰付き）
+      tmp.copy(player.pos).sub(anchor);
+      const len = tmp.length();
+      // たるませない：S で伸ばす時以外は自然長を現在距離まで縮め、常にピンと張る
+      if (!keys['KeyS']) ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
+      if (len > 1e-4) {
+        tmp.multiplyScalar(1 / len);                 // 外向き単位ベクトル
+        const stretch = len - ropeLength;
+        if (stretch > 0) {                            // 伸びている時だけ縮もうとする
+          const radVel = player.vel.dot(tmp);         // 外向きの速度成分
+          // ロープが長いほど縮む力を強く（基準長 SPRING_REF からの倍率）
+          const sf = THREE.MathUtils.clamp(ropeLength / SPRING_REF, 0.5, 10);
+          const f = SPRING_K * sf * stretch + SPRING_DAMP * Math.sqrt(sf) * radVel;
+          player.vel.addScaledVector(tmp, -f * h);    // 引き戻す＝ゴムが縮む
+        }
+      }
+    }
+    // 積分
+    player.pos.addScaledVector(player.vel, h);
+    resolveCollisions();
+    if (onWall && !attached) stabilizeWallVerticalVel();
+  }
+
+  if (onWall && !attached) snapToWallPlane();
+
+  // 地面：すり抜けず着地
+  if (player.pos.y < FLOOR) {
+    player.pos.y = FLOOR;
+    if (player.vel.y < 0) player.vel.y = 0;
+    onWall = false;
+    groundedByFloor = true;
+  }
+  grounded = !attached && (groundedByRoof || groundedByFloor || onWall);
+
+  if (grounded && jumpGraceTimer <= 0) {
+    player.vel.x *= (1 - 8 * dt);
+    player.vel.y *= (1 - 8 * dt);
+    player.vel.z *= (1 - 8 * dt);
+    const hs = onWall
+      ? Math.hypot(player.vel.x, player.vel.y, player.vel.z)
+      : Math.hypot(player.vel.x, player.vel.z);
+    if (hs > RUN_MAX) {
+      const s = RUN_MAX / hs;
+      player.vel.x *= s;
+      player.vel.y *= s;
+      player.vel.z *= s;
+    }
+    // 壁では入力なし時のみ垂直速度を止める
+    if (onWall) stabilizeWallVerticalVel();
+  } else {
+    player.vel.multiplyScalar(1 - 0.02 * dt);   // 空気抵抗（空中のみ）
+  }
+}
+
+function fillTrail() {
+  for (let i = 0; i < TRAIL_LEN; i++) {
+    trailPos[i * 3] = player.pos.x; trailPos[i * 3 + 1] = player.pos.y; trailPos[i * 3 + 2] = player.pos.z;
+  }
+}
+
+// R キー：最初からやり直し
+function resetGame() {
+  release();
+  player.vel.set(0, 0, 0);
+  faceYaw = 0;
+  camYaw = 0;
+  camPitch = 0.28;
+  onWall = false;
+  wallDetachTimer = 0;
+  jumpGraceTimer = 0;
+  spaceQueued = false;
+  wallNX = 0; wallNZ = 0;
+  resetWorld();
+  player.pos.set(START_SLOT.wx, GROUND_Y + START_H + PLAYER_R, START_SLOT.wz);
+  fillTrail();
+}
+
+// ============================================================
+//  カメラ追従
+// ============================================================
+const camTarget = new THREE.Vector3();
+const camFocus = new THREE.Vector3();
+const camDir = new THREE.Vector3();
+const _focusTarget = new THREE.Vector3();
+const _camFa = new THREE.Vector3();
+let frameDist = 18;   // 平滑化したカメラ距離（自動フレーミング用）
+
+// 角度の最短経路で補間（急な回転を避ける）
+function lerpAngle(from, to, t) {
+  let d = to - from;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return from + d * t;
+}
+
+function updateCamera(dt) {
+  if (!dragging) {
+    // W/S で前後に進むとき、カメラの向きへ体をゆっくり旋回（A/D はストレイフ）
+    if (keys['KeyW'] || keys['KeyS']) {
+      const rate = attached ? TURN_RATE * 0.55 : TURN_RATE;
+      faceYaw = lerpAngle(faceYaw, camYaw, Math.min(1, dt * rate));
+    }
+    const yawRate = attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE;
+    camYaw = lerpAngle(camYaw, faceYaw, Math.min(1, dt * yawRate));
+    camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
+  } else {
+    // ドラッグ中は手動角度を維持。離したときのスナップを防ぐ
+    faceYaw = camYaw;
+  }
+
+  camDir.set(
+    Math.sin(camYaw) * Math.cos(camPitch),
+    Math.sin(camPitch),
+    Math.cos(camYaw) * Math.cos(camPitch)   // yaw=0 でプレイヤー後方(+Z)
+  );
+
+  // 注視点は常にプレイヤー基準で固定（横に振れないので酔いにくい）
+  _focusTarget.set(player.pos.x, player.pos.y + 3, player.pos.z);
+
+  // 距離：基本は近接のまま。アンカーが画面外に出そうな時だけ必要分だけ引く
+  let targetDist = camDist;
+  if (attached) {
+    _camFa.subVectors(anchor, _focusTarget);
+    const depthA = _camFa.dot(camDir);                          // 視線奥行き方向の成分
+    const perpA = Math.sqrt(Math.max(0, _camFa.lengthSq() - depthA * depthA)); // 画面内のずれ
+    const theta = camera.fov * Math.PI / 360 * 0.85;            // 安全マージン込みの半画角
+    const need = depthA + perpA / Math.tan(theta);              // アンカーが収まる最小距離
+    targetDist = THREE.MathUtils.clamp(need, camDist, 60);
+  }
+
+  // 注視点は素早く、距離はゆっくり追従（ガクッと動かない＝酔いにくい）
+  camFocus.lerp(_focusTarget, Math.min(1, dt * 4));
+  frameDist += (targetDist - frameDist) * Math.min(1, dt * 1.5);
+
+  camTarget.copy(camFocus).addScaledVector(camDir, frameDist);
+  camera.position.lerp(camTarget, Math.min(1, dt * 4));
+  camera.lookAt(camFocus);
+}
+
+// ============================================================
+//  描画更新
+// ============================================================
+const _up = new THREE.Vector3(0, 1, 0);
+const _wireDir = new THREE.Vector3();
+const _wireMid = new THREE.Vector3();
+function updateVisuals() {
+  playerMesh.position.copy(player.pos);
+
+  if (attached) {
+    // 円柱をプレイヤー〜アンカー間に配置・向け・伸ばす
+    _wireDir.subVectors(anchor, player.pos);
+    const len = _wireDir.length();
+    _wireMid.addVectors(player.pos, anchor).multiplyScalar(0.5);
+    wire.position.copy(_wireMid);
+    // 伸びている（len > 自然長）ほど細くする＝ゴムが伸びた表現
+    const thin = THREE.MathUtils.clamp(ropeLength / Math.max(len, 0.001), 0.35, 1);
+    wire.scale.set(thin, len, thin);
+    wire.quaternion.setFromUnitVectors(_up, _wireDir.normalize());
+  }
+
+  // トレイルを後ろにずらして先頭に現在地
+  for (let i = TRAIL_LEN - 1; i > 0; i--) {
+    trailPos[i * 3] = trailPos[(i - 1) * 3];
+    trailPos[i * 3 + 1] = trailPos[(i - 1) * 3 + 1];
+    trailPos[i * 3 + 2] = trailPos[(i - 1) * 3 + 2];
+  }
+  trailPos[0] = player.pos.x; trailPos[1] = player.pos.y; trailPos[2] = player.pos.z;
+  trailGeo.attributes.position.needsUpdate = true;
+
+  // 地面・道路・太陽をプレイヤー中心に追従（箱庭）
+  ground.position.set(player.pos.x, GROUND_Y, player.pos.z);
+  updateRoads();
+  sun.position.set(player.pos.x + 80, player.pos.y + 160, player.pos.z + 70);
+  sunTarget.position.copy(player.pos);
+}
+
+// ============================================================
+//  HUD
+// ============================================================
+const altEl = document.getElementById('alt');
+const speedEl = document.getElementById('speed');
+function updateHUD() {
+  const alt = Math.max(0, Math.round(player.pos.y - FLOOR));
+  altEl.textContent = alt + ' m';
+  const kmh = Math.round(player.vel.length() * 3.6);
+  speedEl.textContent = kmh + ' km/h';
+}
+
+// 照準：マウスに追従し、撃てるか(緑)/撃てない(赤)/掴み中(黄)を表示
+function updateAim(dt) {
+  reticleEl.style.left = mouse.x + 'px';
+  reticleEl.style.top  = mouse.y + 'px';
+  if (missFlash > 0) missFlash -= dt;
+  if (attached) {
+    reticleEl.className = 'locked';
+  } else if (missFlash > 0) {
+    reticleEl.className = 'out';
+  } else {
+    reticleEl.className = aimAt(mouse.x, mouse.y) ? '' : 'out';
+  }
+}
+
+// ============================================================
+//  メインループ
+// ============================================================
+resetGame();
+let last = performance.now();
+function loop(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  dt = Math.min(dt, 0.05);   // タブ復帰時の暴走防止
+
+  updateSandboxWorld();
+  stepPhysics(dt);
+  updateVisuals();
+  updateCamera(dt);
+  updateHUD();
+  updateAim(dt);
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// リサイズ対応
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
