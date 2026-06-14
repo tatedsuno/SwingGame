@@ -54,9 +54,9 @@
 
 <div id="hud">
   <div class="title">🕸️ SWING SANDBOX</div>
-  <div><span class="key">左長押し</span>：ワイヤー発射＆スイング ／ <span class="key">離す</span>：手放す</div>
-  <div><span class="key">スイング中</span>：自動で巻き取り（<span class="key">W/S</span>で手動調整）</div>
-  <div><span class="key">WASD</span>：体の向きに対して移動（壁：W/S上下・A/Dは画面左右） ／ <span class="key">Space</span>：ジャンプ</div>
+  <div><span class="key">左クリック</span>：ワイヤー発射（押し続けでスイング）／<span class="key">離す</span>：手放す</div>
+  <div><span class="key">スイング中</span>：自動巻き取り（<span class="key">W/S</span>で調整）／<span class="key">A/D</span>で左右操舵</div>
+  <div><span class="key">地上・空中</span>：<span class="key">WASD</span>で移動（壁：W/S上下・A/Dは画面左右）／<span class="key">Space</span>：ジャンプ</div>
   <div><span class="key">右ドラッグ</span>：カメラ ／ <span class="key">R</span>：最初から</div>
 </div>
 
@@ -66,7 +66,7 @@
 </div>
 
 <div id="reticle"></div>
-<div id="hint">自由に動き回れる箱庭！ ビルや地面を <b>左クリック長押し</b>で掴もう</div>
+<div id="hint">自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）</div>
 
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -330,6 +330,7 @@ function collectNeededSlots() {
 
 function isAnchorBuilding(box) {
   if (!attached || !box.visible) return false;
+  if (attachObject === box) return true;
   const ext = box.userData.half;
   return Math.abs(box.position.x - anchor.x) <= ext
     && Math.abs(box.position.z - anchor.z) <= ext
@@ -418,10 +419,17 @@ scene.add(anchorMark);
 //  入力（クリックでワイヤー発射 / 離すと手放す）
 // ============================================================
 const raycaster = new THREE.Raycaster();
+const clipRaycaster = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
 
 let attached = false;
-const anchor = new THREE.Vector3();
+const anchor = new THREE.Vector3();       // 有効な接地点（障害物でクリップ後）
+const fireAnchor = new THREE.Vector3();   // クリックした本来の接地点
+let attachObject = null;                  // クリック時に掴んだオブジェクト（地面 or ビル）
+const attachFaceNormal = new THREE.Vector3(); // クリックした面の法線（ワールド）
+const ATTACH_PLANE_EPS = 0.12;            // クリック面の平面上とみなす距離 [m]
+const WRAP_FACE_DOT = 0.9;                // この値未満なら別の折り返し面とみなす
+const _planeD = new THREE.Vector3();
 let ropeLength = 0;
 
 const MAX_ROPE = 100000;      // S で伸ばせる上限（射程は無限）
@@ -430,15 +438,22 @@ const hudHint = document.getElementById('hint');
 const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 let missFlash = 0;            // ミスショットの赤フラッシュ残り時間
 
-// マウス位置へレイキャストし、掴める点（ビル・地面）を返す。無ければ null
-function aimAt(clientX, clientY) {
+// マウス位置へレイキャスト（ヒット情報）
+function aimHit(clientX, clientY) {
   ndc.x = (clientX / window.innerWidth) * 2 - 1;
   ndc.y = -(clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
+  raycaster.near = 0;
+  raycaster.far = Infinity;
   const targets = activeBoxes.length ? [...activeBoxes, ground] : [ground];
   const hits = raycaster.intersectObjects(targets, false);
   if (hits.length === 0) return null;
-  return hits[0].point;
+  return hits[0];
+}
+
+function aimAt(clientX, clientY) {
+  const hit = aimHit(clientX, clientY);
+  return hit ? hit.point : null;
 }
 
 const keys = {};
@@ -452,10 +467,45 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
 
+function storeAttachSurface(hit) {
+  attachObject = hit.object;
+  _hitN.copy(hit.face.normal);
+  if (hit.object.matrixWorld) _hitN.transformDirection(hit.object.matrixWorld);
+  attachFaceNormal.copy(_hitN);
+}
+
+function isNewWrapSurface(hit) {
+  if (!hit.face) return true;
+  _hitN.copy(hit.face.normal);
+  if (hit.object.matrixWorld) _hitN.transformDirection(hit.object.matrixWorld);
+  if (hit.object !== attachObject) return true;
+  if (attachFaceNormal.dot(_hitN) < WRAP_FACE_DOT) return true;
+  return !isOnAttachPlane(hit.point);
+}
+
+// 折り返し接地点を新しい fireAnchor に昇格（以前の接地点は破棄）
+function promoteFireAnchor(hit) {
+  _hitN.copy(hit.face.normal);
+  if (hit.object.matrixWorld) _hitN.transformDirection(hit.object.matrixWorld);
+  fireAnchor.copy(hit.point).addScaledVector(_hitN, 0.04);
+  storeAttachSurface(hit);
+}
+
+function isOnAttachPlane(point) {
+  return Math.abs(attachFaceNormal.dot(_planeD.copy(point).sub(fireAnchor))) < ATTACH_PLANE_EPS;
+}
+
+function isSameAttachSurface(hit) {
+  return hit.object === attachObject && isOnAttachPlane(hit.point);
+}
+
 function tryAttach(clientX, clientY) {
-  const p = aimAt(clientX, clientY);
-  if (!p) { missFlash = 0.18; return; }
+  const hit = aimHit(clientX, clientY);
+  if (!hit) { missFlash = 0.18; return; }
+  const p = hit.point;
+  storeAttachSurface(hit);
   anchor.copy(p);
+  fireAnchor.copy(p);
   ropeLength = player.pos.distanceTo(anchor);
   // 接地中と同じ面への発射は初速の縮みを入れない
   if (!isAnchorOnCurrentSurface(p)) {
@@ -499,6 +549,7 @@ function isAnchorOnCurrentSurface(p) {
 }
 function release() {
   attached = false;
+  attachObject = null;
   wire.visible = false;
   anchorMark.visible = false;
 }
@@ -557,8 +608,9 @@ const SPRING_DAMP = 14;   // ゴムロープの減衰（振動を抑える）
 const SPRING_REF = 30;    // 基準ロープ長（これより長いと縮む力が強くなる）
 const PLAYER_R = 0.5;     // プレイヤー半径＝幅1m（衝突・接地）
 const FLOOR = GROUND_Y + PLAYER_R;
-const RUN_MAX = 14;       // 地上走行の最高速度（m/s）
+const RUN_MAX = 100 / 3.6; // 地上走行の最高速度（100 km/h）
 const JUMP_V = 14;        // ジャンプ初速
+const SWING_JUMP_V = 14;  // スイング中ジャンプ：接地点方向への初速
 let grounded = false;
 let groundedByRoof = false;
 let groundedByFloor = false;
@@ -576,6 +628,52 @@ let wallDetachTimer = 0;
 let jumpGraceTimer = 0;              // ジャンプ直後は着地スナップを無効化
 let spaceQueued = false;             // Space は押した瞬間だけジャンプ
 const tmp = new THREE.Vector3();
+const _toFire = new THREE.Vector3();
+const _clipOrig = new THREE.Vector3();
+const _hitN = new THREE.Vector3();
+
+// プレイヤー〜本来の接地点の直線が障害物に当たれば、その接触点を有効な接地点にする
+function clipRopeAnchorToObstacles() {
+  _toFire.subVectors(fireAnchor, player.pos);
+  const dist = _toFire.length();
+  if (dist < 0.2) {
+    anchor.copy(fireAnchor);
+    anchorMark.position.copy(anchor);
+    return;
+  }
+  _toFire.multiplyScalar(1 / dist);
+  const start = Math.min(PLAYER_R + 0.15, dist * 0.45);
+  _clipOrig.copy(player.pos).addScaledVector(_toFire, start);
+  const far = dist - start - 0.05;
+  if (far <= 0) {
+    anchor.copy(fireAnchor);
+    anchorMark.position.copy(anchor);
+    return;
+  }
+
+  clipRaycaster.set(_clipOrig, _toFire);
+  clipRaycaster.near = 0;
+  clipRaycaster.far = far;
+  const targets = activeBoxes.length ? [...activeBoxes, ground] : [ground];
+  const hits = clipRaycaster.intersectObjects(targets, false);
+
+  // クリックした面だけ除外。同オブジェクトの別面・角はクリップ対象
+  let clipHit = null;
+  for (const hit of hits) {
+    if (isSameAttachSurface(hit)) continue;
+    clipHit = hit;
+    break;
+  }
+
+  if (clipHit && isNewWrapSurface(clipHit)) promoteFireAnchor(clipHit);
+  anchor.copy(fireAnchor);
+  anchorMark.position.copy(anchor);
+
+  if (!keys['KeyS']) {
+    const len = anchor.distanceTo(player.pos);
+    ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
+  }
+}
 
 // faceYaw から体の前方向・右方向（XZ 平面）を取得
 function bodyAxes(yaw, out) {
@@ -690,10 +788,21 @@ function performJump() {
   grounded = false;
 }
 
-// ロープを保持したままジャンプ（スイング中の Space）
+// ロープを保持したままジャンプ（スイング中の Space）— 接地点方向へ引き寄せる
 function swingJump() {
+  tmp.subVectors(anchor, player.pos);
+  const len = tmp.length();
+  if (len < 1e-4) return;
+  tmp.multiplyScalar(SWING_JUMP_V / len);
+  player.vel.add(tmp);
+  jumpGraceTimer = 0.22;
+}
+
+// ロープ保持中に地面にいるときのジャンプ（地面を蹴って上へ）
+function swingJumpFromGround() {
   player.vel.y = Math.max(player.vel.y, JUMP_V);
   jumpGraceTimer = 0.22;
+  grounded = false;
 }
 
 // 壁の垂直速度：入力がないときだけ止める（W/S の移動を妨げない）
@@ -866,11 +975,14 @@ function resolveCollisions() {
 function stepPhysics(dt) {
   wallDetachTimer = Math.max(0, wallDetachTimer - dt);
   jumpGraceTimer = Math.max(0, jumpGraceTimer - dt);
+  if (attached) clipRopeAnchorToObstacles();
   const canWallRun = onWall && !groundedByRoof && !groundedByFloor;
   if (spaceQueued) {
     spaceQueued = false;
-    if (attached) swingJump();
-    else if (grounded || canWallRun) performJump();
+    if (attached) {
+      if (groundedByFloor) swingJumpFromGround();
+      else swingJump();
+    } else if (grounded || canWallRun) performJump();
   }
 
   let reelRate = 0;
