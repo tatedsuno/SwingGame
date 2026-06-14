@@ -3,7 +3,7 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Editor / local
-*.log
+# Dependencies
+node_modules/
 .vscode/
 .idea/
