@@ -47,6 +47,63 @@
     text-shadow: 0 1px 2px #000; pointer-events: none; user-select: none;
     transition: opacity .4s; border: 1px solid rgba(127,208,255,0.3);
   }
+
+  #options-btn {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    z-index: 20; padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(127,208,255,0.35);
+    background: rgba(20,30,55,0.85); color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 13px; cursor: pointer; user-select: none;
+    transition: background .15s, border-color .15s;
+  }
+  #options-btn:hover { background: rgba(35,50,85,0.95); border-color: rgba(127,208,255,0.6); }
+
+  #options-panel {
+    position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+    background: rgba(5,8,18,0.72); backdrop-filter: blur(4px);
+  }
+  #options-panel.hidden { display: none; }
+
+  .options-dialog {
+    width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto;
+    padding: 22px 24px 20px; border-radius: 14px;
+    background: linear-gradient(160deg, rgba(24,34,58,0.98), rgba(14,20,38,0.98));
+    border: 1px solid rgba(127,208,255,0.35); box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+    color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  .options-dialog h2 {
+    margin: 0 0 18px; font-size: 20px; font-weight: 700; color: #7fd0ff;
+  }
+  .opt-row {
+    margin-bottom: 16px;
+  }
+  .opt-row label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 14px; margin-bottom: 6px;
+  }
+  .opt-row label span.val {
+    font-variant-numeric: tabular-nums; color: #7fffd0; font-weight: 600; font-size: 13px;
+  }
+  .opt-row input[type="range"] {
+    width: 100%; accent-color: #6ba8ff;
+  }
+  .opt-row .range-pair {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  .opt-row .range-pair label { display: block; font-size: 12px; opacity: 0.85; margin-bottom: 4px; }
+  .opt-actions {
+    display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; padding-top: 16px;
+    border-top: 1px solid rgba(127,208,255,0.2);
+  }
+  .opt-actions button {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(127,208,255,0.35);
+    background: rgba(30,45,75,0.9); color: #cfe3ff; font-size: 13px; cursor: pointer;
+    font-family: inherit;
+  }
+  .opt-actions button:hover { background: rgba(45,65,105,0.95); }
+  .opt-actions button.primary {
+    background: rgba(60,110,180,0.85); border-color: rgba(127,208,255,0.55);
+  }
+  .opt-actions button.primary:hover { background: rgba(75,130,200,0.95); }
 </style>
 </head>
 <body>
@@ -57,7 +114,49 @@
   <div><span class="key">左クリック</span>：ワイヤー発射（押し続けでスイング）／<span class="key">離す</span>：手放す</div>
   <div><span class="key">スイング中</span>：自動巻き取り（<span class="key">W/S</span>で調整）／<span class="key">A/D</span>で左右操舵</div>
   <div><span class="key">地上・空中</span>：<span class="key">WASD</span>で移動（壁：W/S上下・A/Dは画面左右）／<span class="key">Space</span>：ジャンプ</div>
-  <div><span class="key">右ドラッグ</span>：カメラ ／ <span class="key">R</span>：最初から</div>
+  <div><span class="key">右ドラッグ</span>：カメラ ／ <span class="key">R</span>：最初から ／ <span class="key">Esc</span>：オプション</div>
+</div>
+
+<button id="options-btn" type="button" title="オプション (Esc)">⚙ オプション</button>
+
+<div id="options-panel" class="hidden" aria-hidden="true">
+  <div class="options-dialog" role="dialog" aria-labelledby="options-title">
+    <h2 id="options-title">オプション</h2>
+
+    <div class="opt-row">
+      <label>カメラ感度 <span class="val" id="val-camSensitivity">1.0</span></label>
+      <input type="range" id="opt-camSensitivity" min="0.2" max="3" step="0.1" value="1">
+    </div>
+
+    <div class="opt-row">
+      <label>カメラ距離 <span class="val" id="val-camDist">18 m</span></label>
+      <input type="range" id="opt-camDist" min="6" max="80" step="1" value="18">
+    </div>
+
+    <div class="opt-row">
+      <label>ビル表示範囲 <span class="val" id="val-genRadius">400 m</span></label>
+      <input type="range" id="opt-genRadius" min="150" max="500" step="10" value="400">
+    </div>
+
+    <div class="opt-row">
+      <label>ビルの高さ</label>
+      <div class="range-pair">
+        <div>
+          <label for="opt-buildingHMin">最小 <span class="val" id="val-buildingHMin">60 m</span></label>
+          <input type="range" id="opt-buildingHMin" min="20" max="400" step="10" value="60">
+        </div>
+        <div>
+          <label for="opt-buildingHMax">最大 <span class="val" id="val-buildingHMax">450 m</span></label>
+          <input type="range" id="opt-buildingHMax" min="50" max="600" step="10" value="450">
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-actions">
+      <button type="button" id="options-reset">初期値に戻す</button>
+      <button type="button" class="primary" id="options-close">閉じる</button>
+    </div>
+  </div>
 </div>
 
 <div id="stats">
@@ -76,6 +175,155 @@
 import * as THREE from 'three';
 
 // ============================================================
+//  オプション（localStorage 保存）
+// ============================================================
+const OPTIONS_STORAGE_KEY = 'swing-sandbox-options';
+const OPTIONS_DEFAULTS = {
+  camSensitivity: 1.0,
+  camDist: 18,
+  genRadius: 400,
+  buildingHMin: 60,
+  buildingHMax: 450,
+};
+const CAM_SENS_BASE = 0.005;
+const CAM_DIST_MIN = 6;
+const CAM_DIST_MAX = 80;
+
+let options = { ...OPTIONS_DEFAULTS };
+let optionsOpen = false;
+
+function loadOptions() {
+  try {
+    const raw = localStorage.getItem(OPTIONS_STORAGE_KEY);
+    if (!raw) return { ...OPTIONS_DEFAULTS };
+    return { ...OPTIONS_DEFAULTS, ...JSON.parse(raw) };
+  } catch {
+    return { ...OPTIONS_DEFAULTS };
+  }
+}
+
+function saveOptions() {
+  try {
+    localStorage.setItem(OPTIONS_STORAGE_KEY, JSON.stringify(options));
+  } catch { /* ignore */ }
+}
+
+function normalizeOptions() {
+  options.camSensitivity = THREE.MathUtils.clamp(+options.camSensitivity || OPTIONS_DEFAULTS.camSensitivity, 0.2, 3);
+  options.camDist = THREE.MathUtils.clamp(Math.round(+options.camDist || OPTIONS_DEFAULTS.camDist), CAM_DIST_MIN, CAM_DIST_MAX);
+  options.genRadius = THREE.MathUtils.clamp(Math.round(+options.genRadius || OPTIONS_DEFAULTS.genRadius), 150, 500);
+  options.buildingHMin = THREE.MathUtils.clamp(Math.round(+options.buildingHMin || OPTIONS_DEFAULTS.buildingHMin), 20, 400);
+  options.buildingHMax = THREE.MathUtils.clamp(Math.round(+options.buildingHMax || OPTIONS_DEFAULTS.buildingHMax), 50, 600);
+  if (options.buildingHMin > options.buildingHMax) {
+    [options.buildingHMin, options.buildingHMax] = [options.buildingHMax, options.buildingHMin];
+  }
+}
+
+options = loadOptions();
+normalizeOptions();
+
+function updateFogFromOptions() {
+  scene.fog.near = 150;
+  scene.fog.far = Math.max(600, options.genRadius * 1.95);
+}
+
+function refreshBuildingHeights() {
+  const sk = START_KEY();
+  for (const [wk, data] of worldSlots) {
+    if (wk === sk) continue;
+    data.h = THREE.MathUtils.clamp(data.h, options.buildingHMin, options.buildingHMax);
+  }
+  updateSandboxWorld(true);
+}
+
+function syncOptionsUI() {
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = String(val); };
+  set('opt-camSensitivity', options.camSensitivity);
+  set('opt-camDist', options.camDist);
+  set('opt-genRadius', options.genRadius);
+  set('opt-buildingHMin', options.buildingHMin);
+  set('opt-buildingHMax', options.buildingHMax);
+  updateOptionsLabels();
+}
+
+function updateOptionsLabels() {
+  const fmt = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  fmt('val-camSensitivity', options.camSensitivity.toFixed(1));
+  fmt('val-camDist', options.camDist + ' m');
+  fmt('val-genRadius', options.genRadius + ' m');
+  fmt('val-buildingHMin', options.buildingHMin + ' m');
+  fmt('val-buildingHMax', options.buildingHMax + ' m');
+}
+
+function readOptionsFromUI() {
+  const num = id => +document.getElementById(id).value;
+  options.camSensitivity = num('opt-camSensitivity');
+  options.camDist = num('opt-camDist');
+  options.genRadius = num('opt-genRadius');
+  options.buildingHMin = num('opt-buildingHMin');
+  options.buildingHMax = num('opt-buildingHMax');
+  normalizeOptions();
+}
+
+function applyOptions({ refreshHeights = false } = {}) {
+  camDist = options.camDist;
+  frameDist = options.camDist;
+  updateFogFromOptions();
+  if (refreshHeights) refreshBuildingHeights();
+  else updateSandboxWorld(true);
+  saveOptions();
+  syncOptionsUI();
+}
+
+function setOptionsOpen(open) {
+  optionsOpen = open;
+  const panel = document.getElementById('options-panel');
+  panel.classList.toggle('hidden', !open);
+  panel.setAttribute('aria-hidden', String(!open));
+  canvas.style.pointerEvents = open ? 'none' : '';
+  const reticle = document.getElementById('reticle');
+  if (reticle) reticle.style.opacity = open ? '0' : '0.85';
+  if (open) {
+    syncOptionsUI();
+    dragging = false;
+  }
+}
+
+function toggleOptions() {
+  setOptionsOpen(!optionsOpen);
+}
+
+function initOptionsUI() {
+  const panel = document.getElementById('options-panel');
+  const inputs = ['opt-camSensitivity', 'opt-camDist', 'opt-genRadius', 'opt-buildingHMin', 'opt-buildingHMax'];
+
+  document.getElementById('options-btn').addEventListener('click', () => setOptionsOpen(true));
+  document.getElementById('options-close').addEventListener('click', () => setOptionsOpen(false));
+  panel.addEventListener('click', e => { if (e.target === panel) setOptionsOpen(false); });
+
+  document.getElementById('options-reset').addEventListener('click', () => {
+    Object.assign(options, OPTIONS_DEFAULTS);
+    normalizeOptions();
+    camDist = options.camDist;
+    frameDist = options.camDist;
+    applyOptions({ refreshHeights: true });
+  });
+
+  for (const id of inputs) {
+    document.getElementById(id).addEventListener('input', () => {
+      readOptionsFromUI();
+      updateOptionsLabels();
+      const heightChanged = id === 'opt-buildingHMin' || id === 'opt-buildingHMax';
+      if (id === 'opt-camDist') {
+        camDist = options.camDist;
+        frameDist = options.camDist;
+      }
+      applyOptions({ refreshHeights: heightChanged });
+    });
+  }
+}
+
+// ============================================================
 //  基本セットアップ
 // ============================================================
 const canvas = document.getElementById('app');
@@ -87,7 +335,8 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a1228);
-scene.fog = new THREE.Fog(0x0a1228, 120, 520);
+scene.fog = new THREE.Fog(0x0a1228, 150, 780);
+updateFogFromOptions();
 
 const camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 3000);
 
@@ -107,9 +356,9 @@ sun.target = sunTarget;   // 太陽（影）をプレイヤーに追従させる
 // =====（1ユニット = 1メートル）======================================
 // 箱庭：プレイヤー中心に一定範囲を自動生成
 const GROUND_Y = 0;
-const GEN_RADIUS = 260;              // プレイヤー周囲の生成半径
+const MAX_GEN_RADIUS = 500;          // 道路・地面の最大生成半径（オプション上限）
 const GROUND_PAD = 60;
-const GROUND_SIZE = (GEN_RADIUS + GROUND_PAD) * 2;
+const GROUND_SIZE = (MAX_GEN_RADIUS + GROUND_PAD) * 2;
 
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),
@@ -153,7 +402,7 @@ const asphaltMat = new THREE.MeshStandardMaterial({ color: 0x2a3140, roughness: 
 const lineMat = new THREE.MeshBasicMaterial({ color: 0xc9a23a });
 const avenues = [];   // 南北の道
 const streets = [];   // 東西の道
-for (const r of roadAxis(GEN_RADIUS)) {
+for (const r of roadAxis(MAX_GEN_RADIUS)) {
   const road = new THREE.Mesh(new THREE.PlaneGeometry(r.w, GROUND_SIZE), asphaltMat);
   road.rotation.x = -Math.PI / 2;
   road.userData.localX = r.c;
@@ -168,7 +417,7 @@ for (const r of roadAxis(GEN_RADIUS)) {
   scene.add(line);
   avenues.push(line);
 }
-for (const r of roadAxis(GEN_RADIUS)) {
+for (const r of roadAxis(MAX_GEN_RADIUS)) {
   const road = new THREE.Mesh(new THREE.PlaneGeometry(GROUND_SIZE, r.w), asphaltMat);
   road.rotation.x = -Math.PI / 2;
   road.userData.localZ = r.c;
@@ -220,7 +469,7 @@ const boxes = [];
 const activeBoxes = [];              // visible のみ（レイ・衝突用）
 const boxColors = [0x4cd6c1, 0x6ba8ff, 0xffd479, 0xc77dff, 0x7fffa1];
 const worldSlots = new Map();        // worldKey → { h, color }（座標ごとに高さを固定）
-const BOX_POOL = 160;
+const BOX_POOL = 260;
 
 function worldKey(wx, wz) {
   return Math.round(wx) + '|' + Math.round(wz);
@@ -235,7 +484,7 @@ function slotData(wx, wz, fixedH) {
   }
   if (!worldSlots.has(wk)) {
     worldSlots.set(wk, {
-      h: THREE.MathUtils.randFloat(60, 450),
+      h: THREE.MathUtils.randFloat(options.buildingHMin, options.buildingHMax),
       color: boxColors[(Math.random() * boxColors.length) | 0],
     });
   }
@@ -310,13 +559,14 @@ function buildingCoordsInRange(min, max, axis) {
 function collectNeededSlots() {
   const needed = new Map();
   const margin = FOOT;
+  const r = options.genRadius;
   const xs = buildingCoordsInRange(
-    player.pos.x - GEN_RADIUS - margin, player.pos.x + GEN_RADIUS + margin, 'x');
+    player.pos.x - r - margin, player.pos.x + r + margin, 'x');
   const zs = buildingCoordsInRange(
-    player.pos.z - GEN_RADIUS - margin, player.pos.z + GEN_RADIUS + margin, 'z');
+    player.pos.z - r - margin, player.pos.z + r + margin, 'z');
   for (const wx of xs) {
     for (const wz of zs) {
-      if (Math.hypot(wx - player.pos.x, wz - player.pos.z) <= GEN_RADIUS) {
+      if (Math.hypot(wx - player.pos.x, wz - player.pos.z) <= r) {
         const wk = worldKey(wx, wz);
         if (!needed.has(wk)) needed.set(wk, { wx, wz });
       }
@@ -458,6 +708,12 @@ function aimAt(clientX, clientY) {
 
 const keys = {};
 window.addEventListener('keydown', e => {
+  if (e.code === 'Escape') {
+    e.preventDefault();
+    toggleOptions();
+    return;
+  }
+  if (optionsOpen) return;
   keys[e.code] = true;
   if (e.code === 'Space') {
     e.preventDefault();
@@ -561,7 +817,8 @@ function release() {
 let dragging = false;
 let leftMouseHeld = false;
 let lastX = 0, lastY = 0;
-let camYaw = 0, camPitch = 0.28, camDist = 18;
+let camYaw = 0, camPitch = 0.28;
+let camDist = options.camDist;
 let faceYaw = 0;                       // プレイヤー体の向き（WASD の基準）
 const CAM_YAW_RATE = 2.8;              // カメラの追従速度（低いほど酔いにくい）
 const TURN_RATE = 2.2;                 // W/S 時にカメラ方向へ体を向ける速度
@@ -570,6 +827,7 @@ let camAutoReturnTimer = 0;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 canvas.addEventListener('pointerdown', e => {
+  if (optionsOpen) return;
   e.preventDefault();
   if (e.button === 2) {                 // 右：カメラドラッグ開始
     dragging = true; lastX = e.clientX; lastY = e.clientY;
@@ -580,12 +838,14 @@ canvas.addEventListener('pointerdown', e => {
   }
 });
 window.addEventListener('pointermove', e => {
+  if (optionsOpen) return;
   mouse.x = e.clientX; mouse.y = e.clientY;   // 照準は常に追跡
   const rightDown = (e.buttons & 2) !== 0;    // 左押しっぱなし中の右ドラッグも検出
   if (rightDown) {
     if (dragging) {
-      camYaw   -= (e.clientX - lastX) * 0.005;
-      camPitch += (e.clientY - lastY) * 0.005;
+      const sens = CAM_SENS_BASE * options.camSensitivity;
+      camYaw   -= (e.clientX - lastX) * sens;
+      camPitch += (e.clientY - lastY) * sens;
       camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
       faceYaw = camYaw;
     }
@@ -615,8 +875,14 @@ window.addEventListener('pointerenter', e => {
 });
 // ホイールでズーム（おまけ）
 canvas.addEventListener('wheel', e => {
+  if (optionsOpen) return;
   e.preventDefault();
-  camDist = THREE.MathUtils.clamp(camDist + e.deltaY * 0.03, 6, 80);
+  camDist = THREE.MathUtils.clamp(camDist + e.deltaY * 0.03, CAM_DIST_MIN, CAM_DIST_MAX);
+  options.camDist = Math.round(camDist);
+  updateOptionsLabels();
+  const slider = document.getElementById('opt-camDist');
+  if (slider) slider.value = String(options.camDist);
+  saveOptions();
 }, { passive: false });
 
 let hintHidden = false;
@@ -641,6 +907,9 @@ const PLAYER_R = 0.5;     // プレイヤー半径＝幅1m（衝突・接地）
 const FLOOR = GROUND_Y + PLAYER_R;
 const RUN_MAX = 60 / 3.6; // 地上走行の最高速度（60 km/h）
 const RUN_ACCEL = RUN_MAX * 1.4; // 走行加速（RUN_MAX に追従）
+const FRICTION_SPEED_THRESH = RUN_MAX; // 走行最高速度 = 静摩擦/動摩擦の境界 [m/s]
+const MU_STATIC = 0.95;   // 静摩擦係数（閾値未満：壁に張り付く）
+const MU_DYNAMIC = 0.06;  // 動摩擦係数（閾値以上：擦って通過）
 const GROUND_COAST_FRICTION = 10; // 入力なし時の減速
 const JUMP_V = 14;        // ジャンプ初速
 const SWING_JUMP_V = 14;  // スイング中ジャンプ：接地点方向への初速
@@ -857,6 +1126,39 @@ function stabilizeWallVerticalVel() {
   else if (!keys['KeyW'] && player.vel.y > 0) player.vel.y = 0;
 }
 
+function isStaticFrictionRegime() {
+  return player.vel.length() < FRICTION_SPEED_THRESH;
+}
+
+// ロープなし＝常に張り付き／ロープ中＝走行速度未満のみ張り付き
+function shouldWallStick() {
+  return !attached || isStaticFrictionRegime();
+}
+
+function wallNormalFromPenetration(dx, dz, ox, oz) {
+  if (ox <= oz) return { nx: dx < 0 ? -1 : 1, nz: 0 };
+  return { nx: 0, nz: dz < 0 ? -1 : 1 };
+}
+
+function pushPlayerToWallFace(b, ext, nx, nz) {
+  if (nx !== 0) player.pos.x = b.position.x + nx * ext;
+  else player.pos.z = b.position.z + nz * ext;
+}
+
+// 壁接触の速度補正：低速=静摩擦（張り付き）／高速=動摩擦（すり抜け）
+function resolveWallContactFriction(nx, nz, staticRegime, h) {
+  const vn = player.vel.x * nx + player.vel.z * nz;
+  if (vn < 0) {
+    player.vel.x -= vn * nx;
+    player.vel.z -= vn * nz;
+  }
+  const mu = staticRegime ? MU_STATIC : MU_DYNAMIC;
+  const tangRate = staticRegime ? 18 : 4;
+  player.vel.x *= (1 - mu * tangRate * h);
+  player.vel.z *= (1 - mu * tangRate * h);
+  if (staticRegime) player.vel.y *= (1 - mu * 6 * h);
+}
+
 // 壁面へ張り付け（法線方向の速度を打ち消し＋位置を壁面に固定）
 function snapToWallPlane() {
   if (wallNX !== 0) player.pos.x = wallAnchorX + wallNX * (wallHalf + PLAYER_R);
@@ -872,6 +1174,7 @@ function snapToWallPlane() {
 // 地面に着地（屋上と同様にスナップして歩行へ遷移）
 function tryLandOnGround() {
   if (jumpGraceTimer > 0) return false;
+  if (attached && !isStaticFrictionRegime()) return false;
   const feetY = player.pos.y - PLAYER_R;
   if (feetY > FLOOR + 0.25) return false;
   if (player.vel.y > 0.5) return false;
@@ -884,6 +1187,7 @@ function tryLandOnGround() {
 // 屋上に乗っているか（足元が屋上面付近でビル上）
 function tryLandOnRoof(b, ox, oz) {
   if (jumpGraceTimer > 0) return false;
+  if (attached && !isStaticFrictionRegime()) return false;
   const topY = b.userData.top;
   const r = PLAYER_R;
   const roofY = topY + r;
@@ -908,6 +1212,7 @@ function canAttachToWall(feetY, topY) {
 // 前フレームの壁に近ければ張り付きを維持
 function tryKeepWallStick() {
   if (leftMouseHeld || groundedByRoof || groundedByFloor) return false;
+  if (attached && !isStaticFrictionRegime()) return false;
   if (!canAttachToWall(player.pos.y - PLAYER_R, wallTopY)) return false;
   if (player.pos.y - PLAYER_R >= wallTopY - 0.15) return false;
   const ext = wallHalf + PLAYER_R;
@@ -926,7 +1231,7 @@ function tryKeepWallStick() {
 }
 
 // ビル(AABB)との衝突：屋上着地・壁張り付き
-function resolveCollisions() {
+function resolveCollisions(h) {
   groundedByRoof = false;
   groundedByFloor = false;
   wallContact = false;
@@ -934,6 +1239,7 @@ function resolveCollisions() {
   onWall = false;
   const r = PLAYER_R;
   let bestWall = null;
+  const wallStick = shouldWallStick();
 
   for (const b of activeBoxes) {
     const topY = b.userData.top;
@@ -967,35 +1273,21 @@ function resolveCollisions() {
 
     // 側面の壁（屋上より下。地面付近からの接触も含む）
     if (ox > -WALL_SKIN && oz > -WALL_SKIN && canAttachToWall(feetY, topY)) {
+      const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
+      if (depth <= 0) continue;
+      const { nx, nz } = wallNormalFromPenetration(dx, dz, ox, oz);
+
       if (leftMouseHeld) {
-        const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
-        if (depth > 0) {
-          if (attached) wallContact = true;
-          if (ox <= oz) {
-            const nx = dx < 0 ? -1 : 1;
-            player.pos.x = b.position.x + nx * ext;
-          } else {
-            const nz = dz < 0 ? -1 : 1;
-            player.pos.z = b.position.z + nz * ext;
-          }
-        }
+        pushPlayerToWallFace(b, ext, nx, nz);
+        resolveWallContactFriction(nx, nz, wallStick, h);
+        if (attached && wallStick) wallContact = true;
         continue;
       }
-      const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
-      if (ox <= oz) {
-        const nx = dx < 0 ? -1 : 1;
-        player.pos.x = b.position.x + nx * ext;
-        if (nx * player.vel.x < 0) player.vel.x = 0;
-        if (!bestWall || depth > bestWall.depth) {
-          bestWall = { nx, nz: 0, depth, bx: b.position.x, bz: b.position.z, half, topY };
-        }
-      } else {
-        const nz = dz < 0 ? -1 : 1;
-        player.pos.z = b.position.z + nz * ext;
-        if (nz * player.vel.z < 0) player.vel.z = 0;
-        if (!bestWall || depth > bestWall.depth) {
-          bestWall = { nx: 0, nz, depth, bx: b.position.x, bz: b.position.z, half, topY };
-        }
+
+      pushPlayerToWallFace(b, ext, nx, nz);
+      resolveWallContactFriction(nx, nz, wallStick, h);
+      if (wallStick && (!bestWall || depth > bestWall.depth)) {
+        bestWall = { nx, nz, depth, bx: b.position.x, bz: b.position.z, half, topY };
       }
     }
   }
@@ -1009,7 +1301,7 @@ function resolveCollisions() {
     if (player.vel.y < 0) player.vel.y = 0;
     groundedByFloor = true;
     onWall = false;
-  } else if (bestWall && !leftMouseHeld && wallDetachTimer <= 0
+  } else if (bestWall && wallStick && !leftMouseHeld && wallDetachTimer <= 0
       && canAttachToWall(feetY, bestWall.topY)) {
     onWall = true;
     wallNX = bestWall.nx;
@@ -1094,7 +1386,7 @@ function stepPhysics(dt) {
     }
     // 積分
     player.pos.addScaledVector(player.vel, h);
-    resolveCollisions();
+    resolveCollisions(h);
     if (onWall && !leftMouseHeld) stabilizeWallVerticalVel();
   }
 
@@ -1162,7 +1454,8 @@ function resetGame() {
   chaseYaw = 0;
   smoothCamYaw = 0;
   camAutoReturnTimer = 0;
-  frameDist = camDist;
+  camDist = options.camDist;
+  frameDist = options.camDist;
   _prevVel.set(0, 0, 0);
   onWall = false;
   wallDetachTimer = 0;
@@ -1415,6 +1708,7 @@ function updateAim(dt) {
 // ============================================================
 //  メインループ
 // ============================================================
+initOptionsUI();
 resetGame();
 let last = performance.now();
 function loop(now) {
@@ -1422,12 +1716,14 @@ function loop(now) {
   last = now;
   dt = Math.min(dt, 0.05);   // タブ復帰時の暴走防止
 
-  updateSandboxWorld();
-  stepPhysics(dt);
+  if (!optionsOpen) {
+    updateSandboxWorld();
+    stepPhysics(dt);
+  }
   updateVisuals();
   updateCamera(dt);
   updateHUD();
-  updateAim(dt);
+  if (!optionsOpen) updateAim(dt);
 
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
