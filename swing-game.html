@@ -656,6 +656,9 @@ const wire = new THREE.Mesh(
 );
 wire.visible = false;
 scene.add(wire);
+const _up = new THREE.Vector3(0, 1, 0);
+const _wireDir = new THREE.Vector3();
+const _wireMid = new THREE.Vector3();
 
 // アンカー地点のマーカー
 const anchorMark = new THREE.Mesh(
@@ -664,6 +667,21 @@ const anchorMark = new THREE.Mesh(
 );
 anchorMark.visible = false;
 scene.add(anchorMark);
+
+// アンカー発射（飛翔→着弾／戻り）
+const ANCHOR_RADIUS = 0.7;       // 黄色球と同じ半径
+const ANCHOR_RANGE = 500;        // 最大射程 [m]
+const ANCHOR_TRAVEL_TIME = 0.5;  // 最大射程までの時間 [s]
+const ANCHOR_SPEED = ANCHOR_RANGE / ANCHOR_TRAVEL_TIME;
+const ANCHOR_RETURN_SPEED = ANCHOR_SPEED * 2;
+let anchorPhase = 'idle';        // idle | out | return
+const projectilePos = new THREE.Vector3();
+const projectileDir = new THREE.Vector3();
+const projectileStart = new THREE.Vector3();
+let projectileTraveled = 0;
+const _projPrev = new THREE.Vector3();
+const _projSeg = new THREE.Vector3();
+const _closestPt = new THREE.Vector3();
 
 // ============================================================
 //  入力（クリックでワイヤー発射 / 離すと手放す）
@@ -689,16 +707,20 @@ const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 let missFlash = 0;            // ミスショットの赤フラッシュ残り時間
 
 // マウス位置へレイキャスト（ヒット情報）
-function aimHit(clientX, clientY) {
+function aimHit(clientX, clientY, maxRange = Infinity) {
   ndc.x = (clientX / window.innerWidth) * 2 - 1;
   ndc.y = -(clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
   raycaster.near = 0;
-  raycaster.far = Infinity;
+  raycaster.far = maxRange;
   const targets = activeBoxes.length ? [...activeBoxes, ground] : [ground];
   const hits = raycaster.intersectObjects(targets, false);
   if (hits.length === 0) return null;
   return hits[0];
+}
+
+function aimInRange(clientX, clientY) {
+  return aimHit(clientX, clientY, ANCHOR_RANGE) !== null;
 }
 
 function aimAt(clientX, clientY) {
@@ -755,25 +777,199 @@ function isSameAttachSurface(hit) {
   return hit.object === attachObject && isOnAttachPlane(hit.point);
 }
 
-function tryAttach(clientX, clientY) {
+function aimDirection(clientX, clientY, out) {
+  ndc.x = (clientX / window.innerWidth) * 2 - 1;
+  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(ndc, camera);
   const hit = aimHit(clientX, clientY);
-  if (!hit) { missFlash = 0.18; return; }
-  const p = hit.point;
-  storeAttachSurface(hit);
-  anchor.copy(p);
-  fireAnchor.copy(p);
+  if (hit) {
+    out.subVectors(hit.point, player.pos);
+    if (out.lengthSq() > 1e-6) { out.normalize(); return; }
+  }
+  out.copy(raycaster.ray.direction).normalize();
+}
+
+function sphereAabbHit(center, radius, box) {
+  const half = box.userData.half;
+  const top = box.userData.top;
+  const bx = box.position.x;
+  const bz = box.position.z;
+  _closestPt.set(
+    THREE.MathUtils.clamp(center.x, bx - half, bx + half),
+    THREE.MathUtils.clamp(center.y, GROUND_Y, top),
+    THREE.MathUtils.clamp(center.z, bz - half, bz + half)
+  );
+  _projSeg.subVectors(center, _closestPt);
+  const distSq = _projSeg.lengthSq();
+  if (distSq > radius * radius) return null;
+
+  let nx, ny, nz;
+  if (distSq < 1e-8) {
+    const penX = (bx + half) - center.x;
+    const penNX = center.x - (bx - half);
+    const penY = top - center.y;
+    const penNY = center.y - GROUND_Y;
+    const penZ = (bz + half) - center.z;
+    const penNZ = center.z - (bz - half);
+    let minPen = penX;
+    nx = 1; ny = 0; nz = 0;
+    if (penNX < minPen) { minPen = penNX; nx = -1; ny = 0; nz = 0; }
+    if (penY < minPen) { minPen = penY; nx = 0; ny = 1; nz = 0; }
+    if (penNY < minPen) { minPen = penNY; nx = 0; ny = -1; nz = 0; }
+    if (penZ < minPen) { minPen = penZ; nx = 0; ny = 0; nz = 1; }
+    if (penNZ < minPen) { nx = 0; ny = 0; nz = -1; }
+  } else {
+    const inv = 1 / Math.sqrt(distSq);
+    nx = _projSeg.x * inv;
+    ny = _projSeg.y * inv;
+    nz = _projSeg.z * inv;
+  }
+  const point = _closestPt.set(
+    center.x - nx * radius,
+    center.y - ny * radius,
+    center.z - nz * radius
+  );
+  return { point, object: box, normal: _projSeg.set(nx, ny, nz) };
+}
+
+function findProjectileHit(prev, curr) {
+  _projSeg.subVectors(curr, prev);
+  const segLen = _projSeg.length();
+  const targets = activeBoxes.length ? [...activeBoxes, ground] : [ground];
+
+  if (segLen > 1e-6) {
+    _projSeg.multiplyScalar(1 / segLen);
+    clipRaycaster.set(prev, _projSeg);
+    clipRaycaster.near = 0;
+    clipRaycaster.far = segLen + ANCHOR_RADIUS;
+    const hits = clipRaycaster.intersectObjects(targets, false);
+    if (hits.length) return hits[0];
+  }
+
+  for (const b of activeBoxes) {
+    const sh = sphereAabbHit(curr, ANCHOR_RADIUS, b);
+    if (sh) {
+      return {
+        point: sh.point.clone(),
+        object: sh.object,
+        normal: sh.normal.clone(),
+      };
+    }
+  }
+
+  if (curr.y - ANCHOR_RADIUS <= GROUND_Y + 0.02) {
+    const py = prev.y - ANCHOR_RADIUS;
+    const cy = curr.y - ANCHOR_RADIUS;
+    if (py > GROUND_Y + 0.02 || segLen < 1e-6) {
+      const t = segLen > 1e-6 ? (py - GROUND_Y) / (py - cy) : 1;
+      const u = THREE.MathUtils.clamp(t, 0, 1);
+      return {
+        point: new THREE.Vector3(
+          prev.x + (curr.x - prev.x) * u,
+          GROUND_Y,
+          prev.z + (curr.z - prev.z) * u
+        ),
+        object: ground,
+        normal: new THREE.Vector3(0, 1, 0),
+      };
+    }
+  }
+  return null;
+}
+
+function completeAttachFromHit(hit) {
+  if (hit.face) {
+    promoteFireAnchor(hit);
+  } else {
+    attachObject = hit.object;
+    attachFaceNormal.copy(hit.normal);
+    fireAnchor.copy(hit.point).addScaledVector(attachFaceNormal, 0.04);
+  }
+  anchor.copy(fireAnchor);
   ropeLength = player.pos.distanceTo(anchor);
-  // 接地中と同じ面への発射は初速の縮みを入れない
-  if (!isAnchorOnCurrentSurface(p)) {
+  if (!isAnchorOnCurrentSurface(anchor)) {
     const pull = THREE.MathUtils.clamp(ropeLength * 0.6, 14, 55);
     player.vel.addScaledVector(anchor.clone().sub(player.pos).normalize(), pull);
   }
   attached = true;
+  anchorPhase = 'idle';
   onWall = false;
   wire.visible = true;
   anchorMark.visible = true;
   anchorMark.position.copy(anchor);
   _prevVel.copy(player.vel);
+  hideHint();
+}
+
+function beginAnchorReturn(missed) {
+  if (anchorPhase === 'idle') return;
+  anchorPhase = 'return';
+  if (missed) missFlash = 0.18;
+}
+
+function finishAnchorReturn() {
+  anchorPhase = 'idle';
+  wire.visible = false;
+  anchorMark.visible = false;
+}
+
+function updateWireBetween(from, to, thinFactor) {
+  _wireDir.subVectors(to, from);
+  const len = _wireDir.length();
+  if (len < 1e-4) return;
+  _wireMid.addVectors(from, to).multiplyScalar(0.5);
+  wire.position.copy(_wireMid);
+  wire.scale.set(thinFactor, len, thinFactor);
+  wire.quaternion.setFromUnitVectors(_up, _wireDir.normalize());
+}
+
+function updateAnchorProjectile(dt) {
+  if (anchorPhase === 'idle') return;
+
+  const step = ANCHOR_SPEED * dt;
+  _projPrev.copy(projectilePos);
+
+  if (anchorPhase === 'out') {
+    const remain = ANCHOR_RANGE - projectileTraveled;
+    const move = Math.min(step, remain);
+    projectilePos.addScaledVector(projectileDir, move);
+    projectileTraveled += move;
+
+    const hit = findProjectileHit(_projPrev, projectilePos);
+    if (hit) {
+      completeAttachFromHit(hit);
+      return;
+    }
+
+    anchorMark.position.copy(projectilePos);
+
+    if (projectileTraveled >= ANCHOR_RANGE - 1e-4) {
+      beginAnchorReturn(true);
+    }
+  } else if (anchorPhase === 'return') {
+    const returnStep = ANCHOR_RETURN_SPEED * dt;
+    _projSeg.subVectors(player.pos, projectilePos);
+    const dist = _projSeg.length();
+    if (dist <= returnStep + PLAYER_R + ANCHOR_RADIUS * 0.5) {
+      finishAnchorReturn();
+      return;
+    }
+    _projSeg.multiplyScalar(1 / dist);
+    projectilePos.addScaledVector(_projSeg, returnStep);
+    anchorMark.position.copy(projectilePos);
+  }
+}
+
+function fireAnchorProjectile(clientX, clientY) {
+  if (anchorPhase !== 'idle' || attached) return;
+  aimDirection(clientX, clientY, projectileDir);
+  projectileStart.copy(player.pos);
+  projectilePos.copy(player.pos).addScaledVector(projectileDir, PLAYER_R + 0.35);
+  projectileTraveled = 0;
+  anchorPhase = 'out';
+  wire.visible = true;
+  anchorMark.visible = true;
+  anchorMark.position.copy(projectilePos);
   hideHint();
 }
 
@@ -809,8 +1005,10 @@ function release() {
   attached = false;
   attachObject = null;
   _prevVel.copy(player.vel);
-  wire.visible = false;
-  anchorMark.visible = false;
+  if (anchorPhase === 'idle') {
+    wire.visible = false;
+    anchorMark.visible = false;
+  }
 }
 
 // カメラ操作（右ドラッグ）の状態
@@ -831,10 +1029,10 @@ canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (e.button === 2) {                 // 右：カメラドラッグ開始
     dragging = true; lastX = e.clientX; lastY = e.clientY;
-  } else if (e.button === 0) {          // 左：ワイヤー発射
+  } else if (e.button === 0) {          // 左：アンカー発射
     leftMouseHeld = true;
     onWall = false;
-    tryAttach(e.clientX, e.clientY);
+    if (!attached && anchorPhase === 'idle') fireAnchorProjectile(e.clientX, e.clientY);
   }
 });
 window.addEventListener('pointermove', e => {
@@ -862,7 +1060,8 @@ window.addEventListener('pointerup', e => {
   }
   if (e.button === 0) {
     leftMouseHeld = false;
-    if (attached) release();
+    if (anchorPhase === 'out') beginAnchorReturn(false);
+    else if (attached) release();
   }
 });
 window.addEventListener('pointerleave', e => {
@@ -1443,7 +1642,17 @@ function snapCameraToPlayer() {
 }
 
 // R キー：最初からやり直し
+function resetAnchorProjectile() {
+  anchorPhase = 'idle';
+  projectileTraveled = 0;
+  if (!attached) {
+    wire.visible = false;
+    anchorMark.visible = false;
+  }
+}
+
 function resetGame() {
+  resetAnchorProjectile();
   release();
   dragging = false;
   leftMouseHeld = false;
@@ -1645,22 +1854,15 @@ function updateCamera(dt) {
 // ============================================================
 //  描画更新
 // ============================================================
-const _up = new THREE.Vector3(0, 1, 0);
-const _wireDir = new THREE.Vector3();
-const _wireMid = new THREE.Vector3();
 function updateVisuals() {
   playerMesh.position.copy(player.pos);
 
   if (attached) {
     // 円柱をプレイヤー〜アンカー間に配置・向け・伸ばす
-    _wireDir.subVectors(anchor, player.pos);
-    const len = _wireDir.length();
-    _wireMid.addVectors(player.pos, anchor).multiplyScalar(0.5);
-    wire.position.copy(_wireMid);
-    // 伸びている（len > 自然長）ほど細くする＝ゴムが伸びた表現
-    const thin = THREE.MathUtils.clamp(ropeLength / Math.max(len, 0.001), 0.35, 1);
-    wire.scale.set(thin, len, thin);
-    wire.quaternion.setFromUnitVectors(_up, _wireDir.normalize());
+    const thin = THREE.MathUtils.clamp(ropeLength / Math.max(player.pos.distanceTo(anchor), 0.001), 0.35, 1);
+    updateWireBetween(player.pos, anchor, thin);
+  } else if (anchorPhase !== 'idle') {
+    updateWireBetween(player.pos, projectilePos, 1);
   }
 
   // トレイルを後ろにずらして先頭に現在地
@@ -1691,17 +1893,19 @@ function updateHUD() {
   speedEl.textContent = kmh + ' km/h';
 }
 
-// 照準：マウスに追従し、撃てるか(緑)/撃てない(赤)/掴み中(黄)を表示
+// 照準：射程内=緑 / 射程外=赤 / 掴み中=黄 / 発射・戻り中=赤
 function updateAim(dt) {
   reticleEl.style.left = mouse.x + 'px';
   reticleEl.style.top  = mouse.y + 'px';
   if (missFlash > 0) missFlash -= dt;
   if (attached) {
     reticleEl.className = 'locked';
+  } else if (anchorPhase !== 'idle') {
+    reticleEl.className = 'out';
   } else if (missFlash > 0) {
     reticleEl.className = 'out';
   } else {
-    reticleEl.className = aimAt(mouse.x, mouse.y) ? '' : 'out';
+    reticleEl.className = aimInRange(mouse.x, mouse.y) ? '' : 'out';
   }
 }
 
@@ -1718,6 +1922,7 @@ function loop(now) {
 
   if (!optionsOpen) {
     updateSandboxWorld();
+    updateAnchorProjectile(dt);
     stepPhysics(dt);
   }
   updateVisuals();
