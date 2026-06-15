@@ -565,6 +565,8 @@ let camYaw = 0, camPitch = 0.28, camDist = 18;
 let faceYaw = 0;                       // プレイヤー体の向き（WASD の基準）
 const CAM_YAW_RATE = 2.8;              // カメラの追従速度（低いほど酔いにくい）
 const TURN_RATE = 2.2;                 // W/S 時にカメラ方向へ体を向ける速度
+const CAM_AUTO_RETURN_DELAY = 3;       // 手動操作後、背面追従を再開するまで [s]
+let camAutoReturnTimer = 0;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 canvas.addEventListener('pointerdown', e => {
@@ -594,11 +596,22 @@ window.addEventListener('pointermove', e => {
   }
 });
 window.addEventListener('pointerup', e => {
-  if (e.button === 2) dragging = false;
+  if (e.button === 2) {
+    dragging = false;
+    camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+  }
   if (e.button === 0) {
     leftMouseHeld = false;
     if (attached) release();
   }
+});
+window.addEventListener('pointerleave', e => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+});
+window.addEventListener('pointerenter', e => {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
 });
 // ホイールでズーム（おまけ）
 canvas.addEventListener('wheel', e => {
@@ -1148,6 +1161,7 @@ function resetGame() {
   camPitch = 0.28;
   chaseYaw = 0;
   smoothCamYaw = 0;
+  camAutoReturnTimer = 0;
   frameDist = camDist;
   _prevVel.set(0, 0, 0);
   onWall = false;
@@ -1183,6 +1197,36 @@ const CHASE_SPEED_FULL = 14;  // 完全に進行方向へ [m/s]
 const CAM_CLEAR_MARGIN = 1.6;   // ビル手前で止める余白 [m]
 const CAM_MIN_DIST = 5;       // カメラの最小距離 [m]
 const CAM_YAW_SCAN = [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05]; // 障害物回避のヨー探索 [rad]
+const EDGE_MARGIN = 40;              // 画面端からこの距離以内でカメラ回転
+const EDGE_YAW_RATE = 1.6;           // 端でのヨー回転 [rad/s]
+const EDGE_PITCH_RATE = 1.0;         // 端でのピッチ回転 [rad/s]
+
+// マウスが画面端／外にある方向へカメラを回す（右ドラッグ中は無効）
+function applyEdgeCameraTurn(dt) {
+  if (dragging) return false;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  let yawTurn = 0;
+  let pitchTurn = 0;
+
+  if (mouse.x <= EDGE_MARGIN) {
+    yawTurn = -THREE.MathUtils.clamp((EDGE_MARGIN - mouse.x) / EDGE_MARGIN, 0, 1);
+  } else if (mouse.x >= w - EDGE_MARGIN) {
+    yawTurn = THREE.MathUtils.clamp((mouse.x - (w - EDGE_MARGIN)) / EDGE_MARGIN, 0, 1);
+  }
+  if (mouse.y <= EDGE_MARGIN) {
+    pitchTurn = -THREE.MathUtils.clamp((EDGE_MARGIN - mouse.y) / EDGE_MARGIN, 0, 1);
+  } else if (mouse.y >= h - EDGE_MARGIN) {
+    pitchTurn = THREE.MathUtils.clamp((mouse.y - (h - EDGE_MARGIN)) / EDGE_MARGIN, 0, 1);
+  }
+  if (yawTurn === 0 && pitchTurn === 0) return false;
+
+  camYaw -= yawTurn * EDGE_YAW_RATE * dt;
+  camPitch += pitchTurn * EDGE_PITCH_RATE * dt;
+  camPitch = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
+  camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+  return true;
+}
 
 function buildCameraDir(yaw, pitch, out) {
   out.set(
@@ -1248,6 +1292,14 @@ function updateCamera(dt) {
   const yawFollow = Math.min(1, dt * (attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE));
 
   if (!dragging) {
+    applyEdgeCameraTurn(dt);
+    if (camAutoReturnTimer > 0) camAutoReturnTimer = Math.max(0, camAutoReturnTimer - dt);
+  }
+
+  const manualView = dragging || camAutoReturnTimer > 0;
+  const allowAutoReturn = !manualView;
+
+  if (!dragging) {
     const velYaw = chaseYawFromVelocity();
     let targetYaw = faceYaw;
     if (velYaw !== null) {
@@ -1256,13 +1308,16 @@ function updateCamera(dt) {
       targetYaw = lerpAngle(faceYaw, velYaw, w);
     }
     chaseYaw = lerpAngle(chaseYaw, targetYaw, Math.min(1, dt * 5));
-    camYaw = lerpAngle(camYaw, chaseYaw, yawFollow);
+
+    if (allowAutoReturn) {
+      camYaw = lerpAngle(camYaw, chaseYaw, yawFollow);
+      camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
+    }
 
     if (keys['KeyW'] || keys['KeyS']) {
       const rate = attached ? TURN_RATE * 0.55 : TURN_RATE;
       faceYaw = lerpAngle(faceYaw, camYaw, Math.min(1, dt * rate));
     }
-    camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
   } else {
     faceYaw = camYaw;
     chaseYaw = camYaw;
@@ -1279,12 +1334,13 @@ function updateCamera(dt) {
   const distRate = pullExtra > 0.5 ? DIST_PULL_RATE : DIST_RETURN_RATE;
   frameDist += (targetDist - frameDist) * Math.min(1, dt * distRate);
 
-  const picked = pickCameraYaw(dragging ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
-  const aimYaw = dragging ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
-  if (!dragging) smoothCamYaw = aimYaw;
+  const picked = pickCameraYaw(manualView ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
+  const aimYaw = manualView ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
+  if (manualView) smoothCamYaw = camYaw;
+  else smoothCamYaw = aimYaw;
 
   buildCameraDir(aimYaw, camPitch, camDir);
-  const safeDist = dragging
+  const safeDist = manualView
     ? cameraClearDist(camFocus, camDir, frameDist)
     : picked.dist;
 
