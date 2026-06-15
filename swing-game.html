@@ -2,12 +2,21 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <title>スイングゲーム 箱庭</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e1a; }
-  #app { width: 100%; height: 100%; display: block; cursor: crosshair; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden; background: #0a0e1a;
+    touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none;
+    user-select: none; overscroll-behavior: none;
+  }
+  #app {
+    width: 100%; height: 100%; display: block; cursor: crosshair;
+    touch-action: none; -webkit-tap-highlight-color: transparent;
+  }
 
   #hud {
     position: fixed; top: 16px; left: 16px;
@@ -104,6 +113,67 @@
     background: rgba(60,110,180,0.85); border-color: rgba(127,208,255,0.55);
   }
   .opt-actions button.primary:hover { background: rgba(75,130,200,0.95); }
+
+  #hud-mobile { display: none; font-size: 12px; line-height: 1.5; max-width: min(92vw, 320px); }
+  body.touch-mode #hud-desktop { display: none; }
+  body.touch-mode #hud-mobile { display: block; }
+  body.touch-mode #hint { font-size: 13px; padding: 8px 14px; max-width: 92vw; text-align: center; }
+  body.touch-mode #options-btn { top: max(12px, env(safe-area-inset-top, 0px)); }
+  body.touch-mode #stats { top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); }
+  body.touch-mode #hud { top: max(12px, env(safe-area-inset-top, 0px)); left: max(12px, env(safe-area-inset-left, 0px)); }
+
+  #touch-stick {
+    position: fixed; left: 0; top: 0; width: 120px; height: 120px;
+    margin: -60px 0 0 -60px; pointer-events: none; z-index: 15;
+    opacity: 0; transition: opacity .12s;
+  }
+  #touch-stick.visible { opacity: 0.72; }
+  #touch-stick-base {
+    position: absolute; inset: 0; border-radius: 50%;
+    border: 2px solid rgba(127,208,255,0.45);
+    background: rgba(20,30,55,0.35);
+    box-shadow: 0 0 12px rgba(0,0,0,0.45);
+  }
+  #touch-stick-knob {
+    position: absolute; left: 50%; top: 50%; width: 44px; height: 44px;
+    margin: -22px 0 0 -22px; border-radius: 50%;
+    border: 2px solid rgba(127,255,208,0.7);
+    background: rgba(127,255,208,0.25);
+    transform: translate(0, 0);
+  }
+
+  #control-mode-panel {
+    position: fixed; inset: 0; z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(5,8,18,0.88); backdrop-filter: blur(6px);
+  }
+  #control-mode-panel.hidden { display: none; }
+  .control-mode-dialog { text-align: center; }
+  .control-mode-dialog p {
+    margin: 0 0 22px; font-size: 14px; line-height: 1.55; opacity: 0.88;
+  }
+  .control-mode-actions {
+    display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;
+  }
+  .control-mode-actions button {
+    min-width: 148px; padding: 14px 20px; border-radius: 10px;
+    border: 1px solid rgba(127,208,255,0.4);
+    background: rgba(30,45,75,0.92); color: #cfe3ff;
+    font-family: inherit; font-size: 15px; cursor: pointer;
+    transition: background .15s, border-color .15s, transform .08s;
+  }
+  .control-mode-actions button:hover {
+    background: rgba(45,65,105,0.98); border-color: rgba(127,208,255,0.65);
+  }
+  .control-mode-actions button:active { transform: scale(0.98); }
+  .control-mode-actions button.primary {
+    background: rgba(60,110,180,0.9); border-color: rgba(127,208,255,0.6);
+  }
+  body:not(.mode-ready) #hud,
+  body:not(.mode-ready) #stats,
+  body:not(.mode-ready) #hint,
+  body:not(.mode-ready) #reticle,
+  body:not(.mode-ready) #options-btn { visibility: hidden; }
 </style>
 </head>
 <body>
@@ -111,10 +181,17 @@
 
 <div id="hud">
   <div class="title">🕸️ SWING SANDBOX</div>
-  <div><span class="key">左クリック</span>：ワイヤー発射（押し続けでスイング）／<span class="key">離す</span>：手放す</div>
-  <div><span class="key">スイング中</span>：<span class="key">W</span>で短く <span class="key">S</span>で長く ／ <span class="key">A/D</span>左右操舵</div>
-  <div><span class="key">Space</span>：ジャンプ（スイング中は高速巻き取り）　<span class="key">WASD</span>：地上・空中・壁の移動</div>
-  <div><span class="key">右ドラッグ</span>または<span class="key">画面端</span>：カメラ操作 ／ <span class="key">R</span>：最初から ／ <span class="key">Esc</span>：オプション</div>
+  <div id="hud-desktop">
+    <div><span class="key">左クリック</span>：ワイヤー発射（押し続けでスイング）／<span class="key">離す</span>：手放す</div>
+    <div><span class="key">スイング中</span>：<span class="key">W</span>で短く <span class="key">S</span>で長く ／ <span class="key">A/D</span>左右操舵</div>
+    <div><span class="key">Space</span>：ジャンプ（スイング中は高速巻き取り）　<span class="key">WASD</span>：地上・空中・壁の移動</div>
+    <div><span class="key">右ドラッグ</span>または<span class="key">画面端</span>：カメラ操作 ／ <span class="key">R</span>：最初から ／ <span class="key">Esc</span>：オプション</div>
+  </div>
+  <div id="hud-mobile">
+    <div><span class="key">タップ</span>：ワイヤー発射／離して手放す</div>
+    <div><span class="key">2本指</span>：カメラ　<span class="key">長押し</span>：移動スティック</div>
+    <div><span class="key">スイング中</span>：接地点方向へドラッグで巻き取り／逆で伸ばし／左右で操舵</div>
+  </div>
 </div>
 
 <button id="options-btn" type="button" title="オプション (Esc)">⚙ オプション</button>
@@ -165,7 +242,22 @@
 </div>
 
 <div id="reticle"></div>
+<div id="touch-stick" aria-hidden="true">
+  <div id="touch-stick-base"></div>
+  <div id="touch-stick-knob"></div>
+</div>
 <div id="hint">自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）</div>
+
+<div id="control-mode-panel" aria-hidden="false">
+  <div class="options-dialog control-mode-dialog" role="dialog" aria-labelledby="control-mode-title">
+    <h2 id="control-mode-title">操作モードを選択</h2>
+    <p>デバッグ用です。テストしたい操作方式を選んでから開始してください。</p>
+    <div class="control-mode-actions">
+      <button type="button" class="primary" id="mode-pc">🖥 PC操作</button>
+      <button type="button" class="primary" id="mode-mobile">📱 スマホ操作</button>
+    </div>
+  </div>
+</div>
 
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -286,11 +378,46 @@ function setOptionsOpen(open) {
   if (open) {
     syncOptionsUI();
     dragging = false;
+    camTwoFinger = false;
+    cancelLongPress();
+    hideTouchStick();
+    activePointers.clear();
+    anchorPointerId = null;
+    if (leftMouseHeld) endAnchorHold();
   }
 }
 
 function toggleOptions() {
   setOptionsOpen(!optionsOpen);
+}
+
+// ============================================================
+//  操作モード選択（デバッグ用）
+// ============================================================
+/** @type {'pc' | 'mobile' | null} */
+let controlMode = null;
+
+function isMobileControl() { return controlMode === 'mobile'; }
+function isPcControl() { return controlMode === 'pc'; }
+
+function applyControlMode(mode) {
+  controlMode = mode;
+  document.body.classList.toggle('touch-mode', mode === 'mobile');
+  document.body.classList.add('mode-ready');
+  hudHint.innerHTML = mode === 'mobile'
+    ? 'タップでビルを掴もう！ 長押しで移動、2本指でカメラ'
+    : '自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）';
+  document.getElementById('control-mode-panel').classList.add('hidden');
+  document.getElementById('control-mode-panel').setAttribute('aria-hidden', 'true');
+  canvas.style.pointerEvents = '';
+  resetGame();
+  last = performance.now();
+}
+
+function initControlModeUI() {
+  document.getElementById('mode-pc').addEventListener('click', () => applyControlMode('pc'));
+  document.getElementById('mode-mobile').addEventListener('click', () => applyControlMode('mobile'));
+  canvas.style.pointerEvents = 'none';
 }
 
 function initOptionsUI() {
@@ -703,13 +830,215 @@ let ropeLength = 0;
 const MAX_ROPE = 100000;      // S で伸ばせる上限（射程は無限）
 const reticleEl = document.getElementById('reticle');
 const hudHint = document.getElementById('hint');
+const touchStickEl = document.getElementById('touch-stick');
+const touchStickKnob = document.getElementById('touch-stick-knob');
 const mouse = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+let viewW = window.innerWidth;
+let viewH = window.innerHeight;
 let missFlash = 0;            // ミスショットの赤フラッシュ残り時間
+
+function updateViewportSize() {
+  const vv = window.visualViewport;
+  viewW = vv ? vv.width : window.innerWidth;
+  viewH = vv ? vv.height : window.innerHeight;
+  camera.aspect = viewW / viewH;
+  camera.updateProjectionMatrix();
+  renderer.setSize(viewW, viewH, false);
+}
+
+// ============================================================
+//  タッチ入力（スマホ操作モード）
+// ============================================================
+const STICK_RADIUS = 52;
+const STICK_DEADZONE = 0.22;
+const LONG_PRESS_MS = 380;
+const TAP_MOVE_TOLERANCE = 14;
+const FAST_REEL_THRESHOLD = 0.55;
+
+const touchKeys = { w: false, s: false, a: false, d: false, fastReel: false };
+function kW() { return !!keys['KeyW'] || touchKeys.w; }
+function kS() { return !!keys['KeyS'] || touchKeys.s; }
+function kA() { return !!keys['KeyA'] || touchKeys.a; }
+function kD() { return !!keys['KeyD'] || touchKeys.d; }
+
+const activePointers = new Map(); // id → { x, y, startX, startY, startTime, mode }
+let anchorPointerId = null;
+let stickPointerId = null;
+let stickOriginX = 0, stickOriginY = 0;
+let stickActive = false;
+let camTwoFinger = false;
+let camLastMidX = 0, camLastMidY = 0;
+let longPressTimer = null;
+let wireControlActive = false;
+let wireOriginX = 0, wireOriginY = 0;
+let wasWireSwing = false;
+const _screenVec = new THREE.Vector3();
+const _screenPt = { x: 0, y: 0 };
+const _anchorScr = { x: 0, y: 0 };
+const _playerScr = { x: 0, y: 0 };
+
+function clearTouchKeys() {
+  touchKeys.w = touchKeys.s = touchKeys.a = touchKeys.d = false;
+  touchKeys.fastReel = false;
+}
+
+function cancelLongPress() {
+  if (longPressTimer !== null) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+function isWireSwingMode() {
+  return attached && !isRopeOnSurface();
+}
+
+function canUseMoveStick() {
+  return !isWireSwingMode();
+}
+
+function worldToScreen(worldPos, out) {
+  _screenVec.copy(worldPos).project(camera);
+  out.x = (_screenVec.x * 0.5 + 0.5) * viewW;
+  out.y = (-_screenVec.y * 0.5 + 0.5) * viewH;
+  return out;
+}
+
+function hideTouchStick() {
+  stickActive = false;
+  stickPointerId = null;
+  if (touchStickEl) touchStickEl.classList.remove('visible');
+  if (touchStickKnob) touchStickKnob.style.transform = 'translate(0px, 0px)';
+}
+
+function showTouchStick(x, y) {
+  stickOriginX = x;
+  stickOriginY = y;
+  stickActive = true;
+  if (touchStickEl) {
+    touchStickEl.style.left = x + 'px';
+    touchStickEl.style.top = y + 'px';
+    touchStickEl.classList.add('visible');
+  }
+  updateTouchStickVisual(0, 0);
+}
+
+function updateTouchStickVisual(nx, ny) {
+  if (!touchStickKnob) return;
+  touchStickKnob.style.transform = `translate(${nx * STICK_RADIUS}px, ${ny * STICK_RADIUS}px)`;
+}
+
+function updateStickFromFinger(x, y) {
+  let dx = x - stickOriginX;
+  let dy = y - stickOriginY;
+  const len = Math.hypot(dx, dy);
+  if (len > STICK_RADIUS) {
+    dx *= STICK_RADIUS / len;
+    dy *= STICK_RADIUS / len;
+  }
+  const nx = dx / STICK_RADIUS;
+  const ny = -dy / STICK_RADIUS; // 画面上方向 = 前
+  updateTouchStickVisual(nx, ny);
+  touchKeys.w = ny > STICK_DEADZONE;
+  touchKeys.s = ny < -STICK_DEADZONE;
+  touchKeys.a = nx < -STICK_DEADZONE;
+  touchKeys.d = nx > STICK_DEADZONE;
+}
+
+function updateWireTouchControl(x, y) {
+  worldToScreen(anchor, _anchorScr);
+  worldToScreen(player.pos, _playerScr);
+  let wx = _anchorScr.x - _playerScr.x;
+  let wy = _anchorScr.y - _playerScr.y;
+  const wlen = Math.hypot(wx, wy);
+  if (wlen < 4) { wx = 0; wy = -1; } else { wx /= wlen; wy /= wlen; }
+  const px = wy;
+  const py = -wx;
+  const dx = x - wireOriginX;
+  const dy = y - wireOriginY;
+  const fwd = (dx * wx + dy * wy) / STICK_RADIUS;
+  const side = (dx * px + dy * py) / STICK_RADIUS;
+  touchKeys.w = fwd > STICK_DEADZONE;
+  touchKeys.s = fwd < -STICK_DEADZONE;
+  touchKeys.a = side < -STICK_DEADZONE;
+  touchKeys.d = side > STICK_DEADZONE;
+  touchKeys.fastReel = fwd > FAST_REEL_THRESHOLD;
+}
+
+function pointerMidpoint() {
+  const pts = [...activePointers.values()];
+  if (pts.length < 2) return null;
+  let sx = 0, sy = 0;
+  for (const p of pts) { sx += p.x; sy += p.y; }
+  return { x: sx / pts.length, y: sy / pts.length };
+}
+
+function refreshTouchModes() {
+  clearTouchKeys();
+  if (camTwoFinger) return;
+
+  const wireNow = isWireSwingMode();
+  if (wireNow && !wasWireSwing && anchorPointerId !== null) {
+    const p = activePointers.get(anchorPointerId);
+    if (p) { wireOriginX = p.x; wireOriginY = p.y; }
+  }
+  wasWireSwing = wireNow;
+
+  if (stickActive && stickPointerId !== null) {
+    if (wireNow) hideTouchStick();
+    else {
+      const p = activePointers.get(stickPointerId);
+      if (p) updateStickFromFinger(p.x, p.y);
+      return;
+    }
+  }
+
+  if (wireNow && anchorPointerId !== null) {
+    const p = activePointers.get(anchorPointerId);
+    if (p) {
+      wireControlActive = true;
+      updateWireTouchControl(p.x, p.y);
+    }
+  }
+}
+
+function scheduleLongPress(pointerId) {
+  cancelLongPress();
+  if (!canUseMoveStick()) return;
+  longPressTimer = setTimeout(() => {
+    longPressTimer = null;
+    const p = activePointers.get(pointerId);
+    if (!p || p.mode !== 'anchor') return;
+    if (Math.hypot(p.x - p.startX, p.y - p.startY) > TAP_MOVE_TOLERANCE) return;
+    if (camTwoFinger || activePointers.size !== 1) return;
+    p.mode = 'stick';
+    stickPointerId = pointerId;
+    showTouchStick(p.startX, p.startY);
+    updateStickFromFinger(p.x, p.y);
+  }, LONG_PRESS_MS);
+}
+
+function beginAnchorHold(clientX, clientY) {
+  leftMouseHeld = true;
+  onWall = false;
+  if (!attached && anchorPhase === 'idle') fireAnchorProjectile(clientX, clientY);
+}
+
+function endAnchorHold() {
+  leftMouseHeld = false;
+  if (anchorPhase === 'out') beginAnchorReturn(false);
+  else if (attached) release();
+}
+
+function isUiTarget(el) {
+  return el && (el.closest('#options-panel') || el.closest('#options-btn')
+    || el.closest('#control-mode-panel'));
+}
 
 // マウス位置へレイキャスト（ヒット情報）
 function aimHit(clientX, clientY, maxRange = Infinity) {
-  ndc.x = (clientX / window.innerWidth) * 2 - 1;
-  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  ndc.x = (clientX / viewW) * 2 - 1;
+  ndc.y = -(clientY / viewH) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
   raycaster.near = 0;
   raycaster.far = maxRange;
@@ -732,10 +1061,10 @@ const keys = {};
 window.addEventListener('keydown', e => {
   if (e.code === 'Escape') {
     e.preventDefault();
-    toggleOptions();
+    if (controlMode) toggleOptions();
     return;
   }
-  if (optionsOpen) return;
+  if (optionsOpen || !controlMode) return;
   keys[e.code] = true;
   if (e.code === 'Space') {
     e.preventDefault();
@@ -778,8 +1107,8 @@ function isSameAttachSurface(hit) {
 }
 
 function aimDirection(clientX, clientY, out) {
-  ndc.x = (clientX / window.innerWidth) * 2 - 1;
-  ndc.y = -(clientY / window.innerHeight) * 2 + 1;
+  ndc.x = (clientX / viewW) * 2 - 1;
+  ndc.y = -(clientY / viewH) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
   const hit = aimHit(clientX, clientY);
   if (hit) {
@@ -1024,21 +1353,103 @@ const CAM_AUTO_RETURN_DELAY = 3;       // 手動操作後、背面追従を再�
 let camAutoReturnTimer = 0;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-canvas.addEventListener('pointerdown', e => {
-  if (optionsOpen) return;
-  e.preventDefault();
-  if (e.button === 2) {                 // 右：カメラドラッグ開始
-    dragging = true; lastX = e.clientX; lastY = e.clientY;
-  } else if (e.button === 0) {          // 左：アンカー発射
-    leftMouseHeld = true;
-    onWall = false;
-    if (!attached && anchorPhase === 'idle') fireAnchorProjectile(e.clientX, e.clientY);
+function handleMobilePointerDown(e) {
+  activePointers.set(e.pointerId, {
+    x: e.clientX, y: e.clientY,
+    startX: e.clientX, startY: e.clientY,
+    startTime: performance.now(),
+    mode: 'pending',
+  });
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+
+  if (activePointers.size >= 2) {
+    cancelLongPress();
+    camTwoFinger = true;
+    const mid = pointerMidpoint();
+    if (mid) { camLastMidX = mid.x; camLastMidY = mid.y; }
+    dragging = true;
+    faceYaw = camYaw;
+    return;
   }
-});
-window.addEventListener('pointermove', e => {
-  if (optionsOpen) return;
-  mouse.x = e.clientX; mouse.y = e.clientY;   // 照準は常に追跡
-  const rightDown = (e.buttons & 2) !== 0;    // 左押しっぱなし中の右ドラッグも検出
+
+  if (e.button === 0 || e.pointerType === 'touch') {
+    anchorPointerId = e.pointerId;
+    const p = activePointers.get(e.pointerId);
+    if (p) {
+      p.mode = isWireSwingMode() ? 'wire' : 'anchor';
+      if (p.mode === 'wire') {
+        wireOriginX = e.clientX;
+        wireOriginY = e.clientY;
+        wireControlActive = true;
+      }
+    }
+    beginAnchorHold(e.clientX, e.clientY);
+    if (canUseMoveStick()) scheduleLongPress(e.pointerId);
+  }
+}
+
+function handlePcPointerDown(e) {
+  if (e.button === 2) {
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  } else if (e.button === 0) {
+    beginAnchorHold(e.clientX, e.clientY);
+  }
+}
+
+function handlePointerDown(e) {
+  if (!controlMode || optionsOpen || isUiTarget(e.target)) return;
+  e.preventDefault();
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  if (isMobileControl()) handleMobilePointerDown(e);
+  else handlePcPointerDown(e);
+}
+
+function handleMobilePointerMove(e) {
+  if (e.pointerType === 'touch') e.preventDefault();
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+
+  const p = activePointers.get(e.pointerId);
+  if (p) {
+    if (Math.hypot(e.clientX - p.startX, e.clientY - p.startY) > TAP_MOVE_TOLERANCE) {
+      cancelLongPress();
+    }
+    p.x = e.clientX;
+    p.y = e.clientY;
+  }
+
+  if (camTwoFinger && activePointers.size >= 2) {
+    const mid = pointerMidpoint();
+    if (mid) {
+      const sens = CAM_SENS_BASE * options.camSensitivity;
+      camYaw   -= (mid.x - camLastMidX) * sens;
+      camPitch += (mid.y - camLastMidY) * sens;
+      camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
+      faceYaw = camYaw;
+      camLastMidX = mid.x;
+      camLastMidY = mid.y;
+      camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+    }
+    return;
+  }
+
+  if (stickActive && e.pointerId === stickPointerId) {
+    updateStickFromFinger(e.clientX, e.clientY);
+  } else if (wireControlActive && e.pointerId === anchorPointerId && isWireSwingMode()) {
+    updateWireTouchControl(e.clientX, e.clientY);
+  }
+}
+
+function handlePcPointerMove(e) {
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+  const rightDown = (e.buttons & 2) !== 0;
   if (rightDown) {
     if (dragging) {
       const sens = CAM_SENS_BASE * options.camSensitivity;
@@ -1047,23 +1458,74 @@ window.addEventListener('pointermove', e => {
       camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
       faceYaw = camYaw;
     }
-    lastX = e.clientX; lastY = e.clientY;
+    lastX = e.clientX;
+    lastY = e.clientY;
     dragging = true;
   } else {
     dragging = false;
   }
-});
-window.addEventListener('pointerup', e => {
+}
+
+function handlePointerMove(e) {
+  if (!controlMode || optionsOpen) return;
+  if (isMobileControl()) handleMobilePointerMove(e);
+  else handlePcPointerMove(e);
+}
+
+function handleMobilePointerUp(e) {
+  activePointers.delete(e.pointerId);
+  try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+
+  if (e.pointerId === stickPointerId) hideTouchStick();
+  if (e.pointerId === anchorPointerId) {
+    endAnchorHold();
+    anchorPointerId = null;
+    wireControlActive = false;
+  }
+  cancelLongPress();
+
+  if (activePointers.size < 2) {
+    if (camTwoFinger) {
+      camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+      dragging = false;
+    }
+    camTwoFinger = false;
+    if (e.pointerType === 'mouse' && e.button === 2) {
+      dragging = false;
+      camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+    }
+  }
+
+  if (activePointers.size === 0) {
+    clearTouchKeys();
+    wasWireSwing = false;
+  } else {
+    refreshTouchModes();
+  }
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+}
+
+function handlePcPointerUp(e) {
   if (e.button === 2) {
     dragging = false;
     camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
   }
-  if (e.button === 0) {
-    leftMouseHeld = false;
-    if (anchorPhase === 'out') beginAnchorReturn(false);
-    else if (attached) release();
-  }
-});
+  if (e.button === 0) endAnchorHold();
+  mouse.x = e.clientX;
+  mouse.y = e.clientY;
+}
+
+function handlePointerUp(e) {
+  if (!controlMode) return;
+  if (isMobileControl()) handleMobilePointerUp(e);
+  else handlePcPointerUp(e);
+}
+
+canvas.addEventListener('pointerdown', handlePointerDown);
+window.addEventListener('pointermove', handlePointerMove, { passive: false });
+window.addEventListener('pointerup', handlePointerUp);
+window.addEventListener('pointercancel', handlePointerUp);
 window.addEventListener('pointerleave', e => {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
@@ -1074,7 +1536,7 @@ window.addEventListener('pointerenter', e => {
 });
 // ホイールでズーム（おまけ）
 canvas.addEventListener('wheel', e => {
-  if (optionsOpen) return;
+  if (optionsOpen || !controlMode) return;
   e.preventDefault();
   camDist = THREE.MathUtils.clamp(camDist + e.deltaY * 0.03, CAM_DIST_MIN, CAM_DIST_MAX);
   options.camDist = Math.round(camDist);
@@ -1171,7 +1633,7 @@ function clipRopeAnchorToObstacles() {
   anchor.copy(fireAnchor);
   anchorMark.position.copy(anchor);
 
-  if (!keys['KeyS']) {
+  if (!kS()) {
     const len = anchor.distanceTo(player.pos);
     ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
   }
@@ -1187,7 +1649,7 @@ function bodyAxes(yaw, out) {
 const _body = { fx: 0, fz: 0, rx: 0, rz: 0 };
 
 function hasMoveInput() {
-  return keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+  return kW() || kS() || kA() || kD();
 }
 
 // ロープ保持中に地面・屋上・壁へ接触しているか（前フレームの状態）
@@ -1200,10 +1662,10 @@ function isRopeOnSurface() {
 // 体の向きに対する WASD 入力 → ワールド加速度
 function applyBodyMove(accel, dt) {
   let bx = 0, bz = 0;
-  if (keys['KeyW']) bz += 1;
-  if (keys['KeyS']) bz -= 1;
-  if (keys['KeyA']) bx -= 1;
-  if (keys['KeyD']) bx += 1;
+  if (kW()) bz += 1;
+  if (kS()) bz -= 1;
+  if (kA()) bx -= 1;
+  if (kD()) bx += 1;
   const blen = Math.hypot(bx, bz);
   if (blen < 1e-6) return;
   bx /= blen;
@@ -1216,8 +1678,8 @@ function applyBodyMove(accel, dt) {
 // スイング中の左右操作（体の右方向）
 function applyBodySteer(dt) {
   let sx = 0;
-  if (keys['KeyA']) sx -= 1;
-  if (keys['KeyD']) sx += 1;
+  if (kA()) sx -= 1;
+  if (kD()) sx += 1;
   if (sx === 0) return;
   bodyAxes(faceYaw, _body);
   player.vel.x += _body.rx * sx * STEER * dt;
@@ -1246,11 +1708,11 @@ function wallCamTangent() {
 
 function applyBodyMoveOnWall(accel, dt) {
   let mx = 0, my = 0, mz = 0;
-  if (keys['KeyW']) my += 1;
-  if (keys['KeyS']) my -= 1;
+  if (kW()) my += 1;
+  if (kS()) my -= 1;
   let side = 0;
-  if (keys['KeyA']) side -= 1;
-  if (keys['KeyD']) side += 1;
+  if (kA()) side -= 1;
+  if (kD()) side += 1;
   if (side !== 0) {
     const tang = wallCamTangent();
     if (tang) { mx += tang.x * side; mz += tang.z * side; }
@@ -1276,7 +1738,7 @@ function wallKickJump() {
   if (player.vel.y < 0) player.vel.y = 0;
 
   let tx = 0, tz = 0;
-  const side = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  const side = (kD() ? 1 : 0) - (kA() ? 1 : 0);
   if (side !== 0) {
     const tang = wallCamTangent();
     if (tang) { tx = tang.x * side * WALL_Kick_TANG; tz = tang.z * side * WALL_Kick_TANG; }
@@ -1320,9 +1782,9 @@ function swingJumpFromGround() {
 
 // 壁の垂直速度：入力がないときだけ止める（W/S の移動を妨げない）
 function stabilizeWallVerticalVel() {
-  if (!keys['KeyW'] && !keys['KeyS']) player.vel.y = 0;
-  else if (!keys['KeyS'] && player.vel.y < 0) player.vel.y = 0;
-  else if (!keys['KeyW'] && player.vel.y > 0) player.vel.y = 0;
+  if (!kW() && !kS()) player.vel.y = 0;
+  else if (!kS() && player.vel.y < 0) player.vel.y = 0;
+  else if (!kW() && player.vel.y > 0) player.vel.y = 0;
 }
 
 function isStaticFrictionRegime() {
@@ -1524,6 +1986,7 @@ function resolveCollisions(h) {
 }
 
 function stepPhysics(dt) {
+  if (isMobileControl()) refreshTouchModes();
   wallDetachTimer = Math.max(0, wallDetachTimer - dt);
   jumpGraceTimer = Math.max(0, jumpGraceTimer - dt);
   if (attached) clipRopeAnchorToObstacles();
@@ -1548,7 +2011,8 @@ function stepPhysics(dt) {
         applyBodyMove(RUN_ACCEL, dt);
       }
     } else {
-      reelRate = AUTO_REEL + (keys['KeyW'] ? REEL_SPEED : 0) - (keys['KeyS'] ? REEL_SPEED : 0);
+      reelRate = AUTO_REEL + (kW() ? REEL_SPEED : 0) - (kS() ? REEL_SPEED : 0);
+      if (touchKeys.fastReel) reelRate += REEL_SPEED * 1.8;
     }
   } else {
     const a = (grounded || canWallRun) ? (canWallRun ? WALL_RUN_ACCEL : RUN_ACCEL) : 14;
@@ -1570,7 +2034,7 @@ function stepPhysics(dt) {
       tmp.copy(player.pos).sub(anchor);
       const len = tmp.length();
       // たるませない：S で伸ばす時以外は自然長を現在距離まで縮め、常にピンと張る
-      if (!keys['KeyS']) ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
+      if (!kS()) ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
       if (len > 1e-4) {
         tmp.multiplyScalar(1 / len);                 // 外向き単位ベクトル
         const stretch = len - ropeLength;
@@ -1656,6 +2120,14 @@ function resetGame() {
   release();
   dragging = false;
   leftMouseHeld = false;
+  activePointers.clear();
+  anchorPointerId = null;
+  cancelLongPress();
+  hideTouchStick();
+  camTwoFinger = false;
+  wireControlActive = false;
+  clearTouchKeys();
+  wasWireSwing = false;
   player.vel.set(0, 0, 0);
   faceYaw = 0;
   camYaw = 0;
@@ -1705,9 +2177,9 @@ const EDGE_PITCH_RATE = 1.0;         // 端でのピッチ回転 [rad/s]
 
 // マウスが画面端／外にある方向へカメラを回す（右ドラッグ中は無効）
 function applyEdgeCameraTurn(dt) {
-  if (dragging) return false;
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  if (dragging || isMobileControl()) return false;
+  const w = viewW;
+  const h = viewH;
   let yawTurn = 0;
   let pitchTurn = 0;
 
@@ -1793,15 +2265,15 @@ function lerpAngle(from, to, t) {
 function updateCamera(dt) {
   const yawFollow = Math.min(1, dt * (attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE));
 
-  if (!dragging) {
+  if (!dragging && !camTwoFinger) {
     applyEdgeCameraTurn(dt);
     if (camAutoReturnTimer > 0) camAutoReturnTimer = Math.max(0, camAutoReturnTimer - dt);
   }
 
-  const manualView = dragging || camAutoReturnTimer > 0;
+  const manualView = dragging || camTwoFinger || camAutoReturnTimer > 0;
   const allowAutoReturn = !manualView;
 
-  if (!dragging) {
+  if (!dragging && !camTwoFinger) {
     const velYaw = chaseYawFromVelocity();
     let targetYaw = faceYaw;
     if (velYaw !== null) {
@@ -1816,7 +2288,7 @@ function updateCamera(dt) {
       camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
     }
 
-    if (keys['KeyW'] || keys['KeyS']) {
+    if (kW() || kS()) {
       const rate = attached ? TURN_RATE * 0.55 : TURN_RATE;
       faceYaw = lerpAngle(faceYaw, camYaw, Math.min(1, dt * rate));
     }
@@ -1913,6 +2385,7 @@ function updateAim(dt) {
 //  メインループ
 // ============================================================
 initOptionsUI();
+initControlModeUI();
 resetGame();
 let last = performance.now();
 function loop(now) {
@@ -1920,7 +2393,7 @@ function loop(now) {
   last = now;
   dt = Math.min(dt, 0.05);   // タブ復帰時の暴走防止
 
-  if (!optionsOpen) {
+  if (controlMode && !optionsOpen) {
     updateSandboxWorld();
     updateAnchorProjectile(dt);
     stepPhysics(dt);
@@ -1928,19 +2401,21 @@ function loop(now) {
   updateVisuals();
   updateCamera(dt);
   updateHUD();
-  if (!optionsOpen) updateAim(dt);
+  if (controlMode && !optionsOpen) updateAim(dt);
 
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
 
-// リサイズ対応
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-});
+// リサイズ・向き変更（iOS Safari の visualViewport 対応）
+updateViewportSize();
+window.addEventListener('resize', updateViewportSize);
+window.addEventListener('orientationchange', () => setTimeout(updateViewportSize, 120));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', updateViewportSize);
+  window.visualViewport.addEventListener('scroll', updateViewportSize);
+}
 </script>
 </body>
 </html>
