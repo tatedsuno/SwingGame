@@ -189,8 +189,9 @@
   </div>
   <div id="hud-mobile">
     <div><span class="key">タップ</span>：ワイヤー発射／離して手放す</div>
-    <div><span class="key">2本指</span>：カメラ　<span class="key">長押し</span>：移動スティック</div>
-    <div><span class="key">スイング中</span>：接地点方向へドラッグで巻き取り／逆で伸ばし／左右で操舵</div>
+    <div><span class="key">ダブルタップ</span>：ジャンプ</div>
+    <div><span class="key">2本指スワイプ</span>：カメラ</div>
+    <div><span class="key">長押し</span>：スティック（走る／グラップ中は引き寄せ・操舵）</div>
   </div>
 </div>
 
@@ -380,6 +381,7 @@ function setOptionsOpen(open) {
     dragging = false;
     camTwoFinger = false;
     cancelLongPress();
+    cancelTapRelease();
     hideTouchStick();
     activePointers.clear();
     anchorPointerId = null;
@@ -405,7 +407,7 @@ function applyControlMode(mode) {
   document.body.classList.toggle('touch-mode', mode === 'mobile');
   document.body.classList.add('mode-ready');
   hudHint.innerHTML = mode === 'mobile'
-    ? 'タップでビルを掴もう！ 長押しで移動、2本指でカメラ'
+    ? 'タップで掴む／離して手放す。長押しでスティック、2本指でカメラ、ダブルタップでジャンプ'
     : '自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）';
   document.getElementById('control-mode-panel').classList.add('hidden');
   document.getElementById('control-mode-panel').setAttribute('aria-hidden', 'true');
@@ -853,6 +855,8 @@ const STICK_RADIUS = 52;
 const STICK_DEADZONE = 0.22;
 const LONG_PRESS_MS = 380;
 const TAP_MOVE_TOLERANCE = 14;
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_DIST = 36;
 const FAST_REEL_THRESHOLD = 0.55;
 
 const touchKeys = { w: false, s: false, a: false, d: false, fastReel: false };
@@ -869,11 +873,10 @@ let stickActive = false;
 let camTwoFinger = false;
 let camLastMidX = 0, camLastMidY = 0;
 let longPressTimer = null;
-let wireControlActive = false;
-let wireOriginX = 0, wireOriginY = 0;
-let wasWireSwing = false;
+let tapReleaseTimer = null;
+let lastTapUpTime = 0;
+let lastTapUpX = 0, lastTapUpY = 0;
 const _screenVec = new THREE.Vector3();
-const _screenPt = { x: 0, y: 0 };
 const _anchorScr = { x: 0, y: 0 };
 const _playerScr = { x: 0, y: 0 };
 
@@ -889,12 +892,15 @@ function cancelLongPress() {
   }
 }
 
-function isWireSwingMode() {
-  return attached && !isRopeOnSurface();
+function cancelTapRelease() {
+  if (tapReleaseTimer !== null) {
+    clearTimeout(tapReleaseTimer);
+    tapReleaseTimer = null;
+  }
 }
 
-function canUseMoveStick() {
-  return !isWireSwingMode();
+function isWireSwingMode() {
+  return attached && !isRopeOnSurface();
 }
 
 function worldToScreen(worldPos, out) {
@@ -937,32 +943,35 @@ function updateStickFromFinger(x, y) {
     dy *= STICK_RADIUS / len;
   }
   const nx = dx / STICK_RADIUS;
-  const ny = -dy / STICK_RADIUS; // 画面上方向 = 前
-  updateTouchStickVisual(nx, ny);
-  touchKeys.w = ny > STICK_DEADZONE;
-  touchKeys.s = ny < -STICK_DEADZONE;
-  touchKeys.a = nx < -STICK_DEADZONE;
-  touchKeys.d = nx > STICK_DEADZONE;
+  const ny = -dy / STICK_RADIUS; // 画面上方向 = スティック前
+  applyStickDirection(nx, ny);
 }
 
-function updateWireTouchControl(x, y) {
-  worldToScreen(anchor, _anchorScr);
-  worldToScreen(player.pos, _playerScr);
-  let wx = _anchorScr.x - _playerScr.x;
-  let wy = _anchorScr.y - _playerScr.y;
-  const wlen = Math.hypot(wx, wy);
-  if (wlen < 4) { wx = 0; wy = -1; } else { wx /= wlen; wy /= wlen; }
-  const px = wy;
-  const py = -wx;
-  const dx = x - wireOriginX;
-  const dy = y - wireOriginY;
-  const fwd = (dx * wx + dy * wy) / STICK_RADIUS;
-  const side = (dx * px + dy * py) / STICK_RADIUS;
-  touchKeys.w = fwd > STICK_DEADZONE;
-  touchKeys.s = fwd < -STICK_DEADZONE;
-  touchKeys.a = side < -STICK_DEADZONE;
-  touchKeys.d = side > STICK_DEADZONE;
-  touchKeys.fastReel = fwd > FAST_REEL_THRESHOLD;
+function applyStickDirection(nx, ny) {
+  updateTouchStickVisual(nx, ny);
+  if (isWireSwingMode()) {
+    worldToScreen(anchor, _anchorScr);
+    worldToScreen(player.pos, _playerScr);
+    let wx = _anchorScr.x - _playerScr.x;
+    let wy = _anchorScr.y - _playerScr.y;
+    const wlen = Math.hypot(wx, wy);
+    if (wlen < 4) { wx = 0; wy = -1; } else { wx /= wlen; wy /= wlen; }
+    const px = wy, py = -wx;
+    const sx = nx, sy = -ny;
+    const fwd = sx * wx + sy * wy;
+    const side = sx * px + sy * py;
+    touchKeys.w = fwd > STICK_DEADZONE;
+    touchKeys.s = fwd < -STICK_DEADZONE;
+    touchKeys.a = side < -STICK_DEADZONE;
+    touchKeys.d = side > STICK_DEADZONE;
+    touchKeys.fastReel = fwd > FAST_REEL_THRESHOLD;
+  } else {
+    touchKeys.w = ny > STICK_DEADZONE;
+    touchKeys.s = ny < -STICK_DEADZONE;
+    touchKeys.a = nx < -STICK_DEADZONE;
+    touchKeys.d = nx > STICK_DEADZONE;
+    touchKeys.fastReel = false;
+  }
 }
 
 function pointerMidpoint() {
@@ -976,35 +985,14 @@ function pointerMidpoint() {
 function refreshTouchModes() {
   clearTouchKeys();
   if (camTwoFinger) return;
-
-  const wireNow = isWireSwingMode();
-  if (wireNow && !wasWireSwing && anchorPointerId !== null) {
-    const p = activePointers.get(anchorPointerId);
-    if (p) { wireOriginX = p.x; wireOriginY = p.y; }
-  }
-  wasWireSwing = wireNow;
-
   if (stickActive && stickPointerId !== null) {
-    if (wireNow) hideTouchStick();
-    else {
-      const p = activePointers.get(stickPointerId);
-      if (p) updateStickFromFinger(p.x, p.y);
-      return;
-    }
-  }
-
-  if (wireNow && anchorPointerId !== null) {
-    const p = activePointers.get(anchorPointerId);
-    if (p) {
-      wireControlActive = true;
-      updateWireTouchControl(p.x, p.y);
-    }
+    const p = activePointers.get(stickPointerId);
+    if (p) updateStickFromFinger(p.x, p.y);
   }
 }
 
 function scheduleLongPress(pointerId) {
   cancelLongPress();
-  if (!canUseMoveStick()) return;
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     const p = activePointers.get(pointerId);
@@ -1016,6 +1004,19 @@ function scheduleLongPress(pointerId) {
     showTouchStick(p.startX, p.startY);
     updateStickFromFinger(p.x, p.y);
   }, LONG_PRESS_MS);
+}
+
+function handleMobileDoubleTap() {
+  cancelTapRelease();
+  spaceQueued = true;
+}
+
+function scheduleTapRelease() {
+  cancelTapRelease();
+  tapReleaseTimer = setTimeout(() => {
+    tapReleaseTimer = null;
+    endAnchorHold();
+  }, DOUBLE_TAP_MS);
 }
 
 function beginAnchorHold(clientX, clientY) {
@@ -1354,11 +1355,12 @@ let camAutoReturnTimer = 0;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 function handleMobilePointerDown(e) {
+  const now = performance.now();
   activePointers.set(e.pointerId, {
     x: e.clientX, y: e.clientY,
     startX: e.clientX, startY: e.clientY,
-    startTime: performance.now(),
-    mode: 'pending',
+    startTime: now,
+    mode: 'anchor',
   });
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
 
@@ -1367,6 +1369,7 @@ function handleMobilePointerDown(e) {
 
   if (activePointers.size >= 2) {
     cancelLongPress();
+    cancelTapRelease();
     camTwoFinger = true;
     const mid = pointerMidpoint();
     if (mid) { camLastMidX = mid.x; camLastMidY = mid.y; }
@@ -1375,19 +1378,22 @@ function handleMobilePointerDown(e) {
     return;
   }
 
+  const isDoubleTap = now - lastTapUpTime < DOUBLE_TAP_MS
+    && Math.hypot(e.clientX - lastTapUpX, e.clientY - lastTapUpY) < DOUBLE_TAP_DIST;
+
+  if (isDoubleTap) {
+    lastTapUpTime = 0;
+    handleMobileDoubleTap();
+    anchorPointerId = e.pointerId;
+    leftMouseHeld = true;
+    scheduleLongPress(e.pointerId);
+    return;
+  }
+
   if (e.button === 0 || e.pointerType === 'touch') {
     anchorPointerId = e.pointerId;
-    const p = activePointers.get(e.pointerId);
-    if (p) {
-      p.mode = isWireSwingMode() ? 'wire' : 'anchor';
-      if (p.mode === 'wire') {
-        wireOriginX = e.clientX;
-        wireOriginY = e.clientY;
-        wireControlActive = true;
-      }
-    }
     beginAnchorHold(e.clientX, e.clientY);
-    if (canUseMoveStick()) scheduleLongPress(e.pointerId);
+    scheduleLongPress(e.pointerId);
   }
 }
 
@@ -1441,8 +1447,6 @@ function handleMobilePointerMove(e) {
 
   if (stickActive && e.pointerId === stickPointerId) {
     updateStickFromFinger(e.clientX, e.clientY);
-  } else if (wireControlActive && e.pointerId === anchorPointerId && isWireSwingMode()) {
-    updateWireTouchControl(e.clientX, e.clientY);
   }
 }
 
@@ -1473,16 +1477,22 @@ function handlePointerMove(e) {
 }
 
 function handleMobilePointerUp(e) {
+  const wasAnchor = e.pointerId === anchorPointerId;
+  const wasStick = e.pointerId === stickPointerId;
+
   activePointers.delete(e.pointerId);
   try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
 
-  if (e.pointerId === stickPointerId) hideTouchStick();
-  if (e.pointerId === anchorPointerId) {
-    endAnchorHold();
-    anchorPointerId = null;
-    wireControlActive = false;
-  }
+  if (wasStick) hideTouchStick();
   cancelLongPress();
+
+  if (wasAnchor) {
+    anchorPointerId = null;
+    lastTapUpTime = performance.now();
+    lastTapUpX = e.clientX;
+    lastTapUpY = e.clientY;
+    scheduleTapRelease();
+  }
 
   if (activePointers.size < 2) {
     if (camTwoFinger) {
@@ -1490,18 +1500,11 @@ function handleMobilePointerUp(e) {
       dragging = false;
     }
     camTwoFinger = false;
-    if (e.pointerType === 'mouse' && e.button === 2) {
-      dragging = false;
-      camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
-    }
   }
 
-  if (activePointers.size === 0) {
-    clearTouchKeys();
-    wasWireSwing = false;
-  } else {
-    refreshTouchModes();
-  }
+  if (activePointers.size === 0) clearTouchKeys();
+  else refreshTouchModes();
+
   mouse.x = e.clientX;
   mouse.y = e.clientY;
 }
@@ -2123,11 +2126,11 @@ function resetGame() {
   activePointers.clear();
   anchorPointerId = null;
   cancelLongPress();
+  cancelTapRelease();
   hideTouchStick();
   camTwoFinger = false;
-  wireControlActive = false;
   clearTouchKeys();
-  wasWireSwing = false;
+  lastTapUpTime = 0;
   player.vel.set(0, 0, 0);
   faceYaw = 0;
   camYaw = 0;
