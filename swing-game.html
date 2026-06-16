@@ -188,10 +188,10 @@
     <div><span class="key">右ドラッグ</span>または<span class="key">画面端</span>：カメラ操作 ／ <span class="key">R</span>：最初から ／ <span class="key">Esc</span>：オプション</div>
   </div>
   <div id="hud-mobile">
-    <div><span class="key">タップ</span>：ワイヤー発射／再タップで手放す</div>
-    <div><span class="key">ダブルタップ</span>：ジャンプ</div>
+    <div><span class="key">タップ</span>：ワイヤー発射（再タップで次を発射）</div>
+    <div><span class="key">ダブルタップ</span>：ジャンプ（グラップ中は手放し／2回目長押しで高速巻き取り）</div>
     <div><span class="key">2本指スワイプ</span>：カメラ</div>
-    <div><span class="key">長押し</span>：スティック（走る／グラップ中は引き寄せ・操舵）</div>
+    <div><span class="key">長押し</span>：触れてスライド（走る／グラップ中は引き寄せ・操舵）</div>
   </div>
 </div>
 
@@ -380,7 +380,6 @@ function setOptionsOpen(open) {
     syncOptionsUI();
     dragging = false;
     camTwoFinger = false;
-    cancelLongPress();
     cancelPendingMobileTap();
     hideTouchStick();
     activePointers.clear();
@@ -407,7 +406,7 @@ function applyControlMode(mode) {
   document.body.classList.toggle('touch-mode', mode === 'mobile');
   document.body.classList.add('mode-ready');
   hudHint.innerHTML = mode === 'mobile'
-    ? 'タップで掴む／再タップで手放す。長押しでスティック、2本指でカメラ、ダブルタップでジャンプ'
+    ? 'タップでワイヤー発射（再タップで次を発射）。触れてスライドで移動、2本指でカメラ'
     : '自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）';
   document.getElementById('control-mode-panel').classList.add('hidden');
   document.getElementById('control-mode-panel').setAttribute('aria-hidden', 'true');
@@ -853,7 +852,7 @@ function updateViewportSize() {
 // ============================================================
 const STICK_RADIUS = 52;
 const STICK_DEADZONE = 0.22;
-const LONG_PRESS_MS = 380;
+const TAP_MAX_MS = 280;
 const TAP_MOVE_TOLERANCE = 14;
 const DOUBLE_TAP_MS = 300;
 const DOUBLE_TAP_DIST = 36;
@@ -872,7 +871,6 @@ let stickOriginX = 0, stickOriginY = 0;
 let stickActive = false;
 let camTwoFinger = false;
 let camLastMidX = 0, camLastMidY = 0;
-let longPressTimer = null;
 let pendingMobileTapTimer = null;
 let pendingMobileTap = null;
 let lastTapUpTime = 0;
@@ -884,13 +882,6 @@ const _playerScr = { x: 0, y: 0 };
 function clearTouchKeys() {
   touchKeys.w = touchKeys.s = touchKeys.a = touchKeys.d = false;
   touchKeys.fastReel = false;
-}
-
-function cancelLongPress() {
-  if (longPressTimer !== null) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
 }
 
 function cancelPendingMobileTap() {
@@ -913,12 +904,26 @@ function executePendingMobileTap() {
   pendingMobileTap = null;
   lastTapUpTime = 0;
   if (!tap) return;
-  if (attached || anchorPhase === 'out') {
+  mobileTapFire(tap.startX, tap.startY);
+}
+
+function isMobileGrappling() {
+  return attached || anchorPhase === 'out';
+}
+
+function mobileTapFire(clientX, clientY) {
+  if (attached) release();
+  if (anchorPhase !== 'idle') resetAnchorProjectile();
+  leftMouseHeld = true;
+  onWall = false;
+  fireAnchorProjectile(clientX, clientY);
+}
+
+function handleMobileDoubleTapOnRelease() {
+  if (isMobileGrappling()) {
     endAnchorHold();
-  } else if (anchorPhase === 'idle') {
-    leftMouseHeld = true;
-    onWall = false;
-    fireAnchorProjectile(tap.startX, tap.startY);
+  } else {
+    spaceQueued = true;
   }
 }
 
@@ -957,7 +962,7 @@ function updateTouchStickVisual(nx, ny) {
   touchStickKnob.style.transform = `translate(${nx * STICK_RADIUS}px, ${ny * STICK_RADIUS}px)`;
 }
 
-function updateStickFromFinger(x, y) {
+function stickNormFromFinger(x, y) {
   let dx = x - stickOriginX;
   let dy = y - stickOriginY;
   const len = Math.hypot(dx, dy);
@@ -965,8 +970,17 @@ function updateStickFromFinger(x, y) {
     dx *= STICK_RADIUS / len;
     dy *= STICK_RADIUS / len;
   }
-  const nx = dx / STICK_RADIUS;
-  const ny = dy / STICK_RADIUS; // 指の方向とノブ・入力が一致
+  return { nx: dx / STICK_RADIUS, ny: dy / STICK_RADIUS };
+}
+
+function updateStickVisualFromFinger(x, y) {
+  const { nx, ny } = stickNormFromFinger(x, y);
+  updateTouchStickVisual(nx, ny);
+  return { nx, ny };
+}
+
+function updateStickFromFinger(x, y) {
+  const { nx, ny } = updateStickVisualFromFinger(x, y);
   applyStickDirection(nx, ny);
 }
 
@@ -1012,33 +1026,12 @@ function refreshTouchModes() {
     const p = activePointers.get(stickPointerId);
     if (p) updateStickFromFinger(p.x, p.y);
   }
-}
-
-function scheduleLongPress(pointerId) {
-  cancelLongPress();
-  longPressTimer = setTimeout(() => {
-    longPressTimer = null;
-    const p = activePointers.get(pointerId);
-    if (!p || p.mode !== 'anchor') return;
-    if (Math.hypot(p.x - p.startX, p.y - p.startY) > TAP_MOVE_TOLERANCE) return;
-    if (camTwoFinger || activePointers.size !== 1) return;
-    p.mode = 'stick';
-    stickPointerId = pointerId;
-    cancelPendingMobileTap();
-    showTouchStick(p.startX, p.startY);
-    updateStickFromFinger(p.x, p.y);
-  }, LONG_PRESS_MS);
-}
-
-function handleMobileDoubleTap() {
-  spaceQueued = true;
-}
-
-function isQuickTap(p) {
-  const elapsed = performance.now() - p.startTime;
-  return p.mode !== 'stick'
-    && elapsed < LONG_PRESS_MS
-    && Math.hypot(p.x - p.startX, p.y - p.startY) <= TAP_MOVE_TOLERANCE;
+  for (const p of activePointers.values()) {
+    if (p.holdReel && p.awaitDoubleTap && attached) {
+      touchKeys.fastReel = true;
+      break;
+    }
+  }
 }
 
 function handleMobileTapRelease(p, clientX, clientY) {
@@ -1047,7 +1040,7 @@ function handleMobileTapRelease(p, clientX, clientY) {
   if (p.awaitDoubleTap || isWithinDoubleTapWindow(clientX, clientY)) {
     cancelPendingMobileTap();
     lastTapUpTime = 0;
-    handleMobileDoubleTap();
+    handleMobileDoubleTapOnRelease();
     return;
   }
 
@@ -1059,6 +1052,13 @@ function handleMobileTapRelease(p, clientX, clientY) {
   cancelPendingMobileTap();
   pendingMobileTap = { startX: p.startX, startY: p.startY };
   pendingMobileTapTimer = setTimeout(executePendingMobileTap, DOUBLE_TAP_MS);
+}
+
+function isQuickTap(p) {
+  const elapsed = performance.now() - p.startTime;
+  return !p.slid
+    && elapsed < TAP_MAX_MS
+    && Math.hypot(p.x - p.startX, p.y - p.startY) <= TAP_MOVE_TOLERANCE;
 }
 
 function beginAnchorHold(clientX, clientY) {
@@ -1402,7 +1402,7 @@ function handleMobilePointerDown(e) {
     x: e.clientX, y: e.clientY,
     startX: e.clientX, startY: e.clientY,
     startTime: now,
-    mode: 'anchor',
+    slid: false,
   });
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
 
@@ -1410,8 +1410,8 @@ function handleMobilePointerDown(e) {
   mouse.y = e.clientY;
 
   if (activePointers.size >= 2) {
-    cancelLongPress();
     cancelPendingMobileTap();
+    hideTouchStick();
     lastTapUpTime = 0;
     camTwoFinger = true;
     const mid = pointerMidpoint();
@@ -1424,12 +1424,16 @@ function handleMobilePointerDown(e) {
   if (activePointers.size === 1 && isWithinDoubleTapWindow(e.clientX, e.clientY, now)) {
     cancelPendingMobileTap();
     const entry = activePointers.get(e.pointerId);
-    if (entry) entry.awaitDoubleTap = true;
+    if (entry) {
+      entry.awaitDoubleTap = true;
+      entry.holdReel = true;
+    }
   }
 
   if (e.button === 0 || e.pointerType === 'touch') {
     anchorPointerId = e.pointerId;
-    scheduleLongPress(e.pointerId);
+    stickPointerId = e.pointerId;
+    showTouchStick(e.clientX, e.clientY);
   }
 }
 
@@ -1460,7 +1464,7 @@ function handleMobilePointerMove(e) {
   const p = activePointers.get(e.pointerId);
   if (p) {
     if (Math.hypot(e.clientX - p.startX, e.clientY - p.startY) > TAP_MOVE_TOLERANCE) {
-      cancelLongPress();
+      p.slid = true;
     }
     p.x = e.clientX;
     p.y = e.clientY;
@@ -1481,8 +1485,16 @@ function handleMobilePointerMove(e) {
     return;
   }
 
-  if (stickActive && e.pointerId === stickPointerId) {
-    updateStickFromFinger(e.clientX, e.clientY);
+  if (stickActive && e.pointerId === stickPointerId && p) {
+    if (p.slid) updateStickFromFinger(e.clientX, e.clientY);
+    else {
+      updateStickVisualFromFinger(e.clientX, e.clientY);
+      clearTouchKeys();
+    }
+  }
+
+  if (p && p.holdReel && p.awaitDoubleTap && attached) {
+    touchKeys.fastReel = true;
   }
 }
 
@@ -1521,11 +1533,14 @@ function handleMobilePointerUp(e) {
   try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
 
   if (wasStick) hideTouchStick();
-  cancelLongPress();
 
   if (wasAnchor) {
     anchorPointerId = null;
-    if (p && p.mode !== 'stick') handleMobileTapRelease(p, e.clientX, e.clientY);
+    if (p) {
+      if (isQuickTap(p)) handleMobileTapRelease(p, e.clientX, e.clientY);
+      p.holdReel = false;
+      p.awaitDoubleTap = false;
+    }
   }
 
   if (activePointers.size < 2) {
@@ -2159,7 +2174,6 @@ function resetGame() {
   leftMouseHeld = false;
   activePointers.clear();
   anchorPointerId = null;
-  cancelLongPress();
   cancelPendingMobileTap();
   hideTouchStick();
   camTwoFinger = false;
