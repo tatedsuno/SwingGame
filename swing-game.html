@@ -966,7 +966,7 @@ function updateStickFromFinger(x, y) {
     dy *= STICK_RADIUS / len;
   }
   const nx = dx / STICK_RADIUS;
-  const ny = -dy / STICK_RADIUS; // 画面上方向 = スティック前
+  const ny = dy / STICK_RADIUS; // 指の方向とノブ・入力が一致
   applyStickDirection(nx, ny);
 }
 
@@ -980,14 +980,14 @@ function applyStickDirection(nx, ny) {
     const wlen = Math.hypot(wx, wy);
     if (wlen < 4) { wx = 0; wy = -1; } else { wx /= wlen; wy /= wlen; }
     const px = wy, py = -wx;
-    const sx = nx, sy = -ny;
+    const sx = nx, sy = ny;
     const fwd = sx * wx + sy * wy;
     const side = sx * px + sy * py;
-    touchKeys.w = fwd < -STICK_DEADZONE;
-    touchKeys.s = fwd > STICK_DEADZONE;
+    touchKeys.w = fwd > STICK_DEADZONE;
+    touchKeys.s = fwd < -STICK_DEADZONE;
     touchKeys.a = side < -STICK_DEADZONE;
     touchKeys.d = side > STICK_DEADZONE;
-    touchKeys.fastReel = fwd < -FAST_REEL_THRESHOLD;
+    touchKeys.fastReel = fwd > FAST_REEL_THRESHOLD;
   } else {
     touchKeys.w = ny < -STICK_DEADZONE;
     touchKeys.s = ny > STICK_DEADZONE;
