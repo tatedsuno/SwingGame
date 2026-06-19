@@ -858,7 +858,7 @@ const STICK_RADIUS = 52;
 const STICK_DEADZONE = 0.22;
 const TAP_MAX_MS = 280;
 const TAP_MOVE_TOLERANCE = 14;
-const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_MS = 200;
 const DOUBLE_TAP_DIST = 36;
 const FAST_REEL_THRESHOLD = 0.55;
 
@@ -1674,7 +1674,6 @@ let wallAnchorX = 0, wallAnchorZ = 0;
 let wallHalf = FOOT / 2;
 let wallTopY = 0;
 const WALL_SKIN = 0.18;
-const WALL_RUN_ACCEL = RUN_ACCEL;
 const WALL_Kick_OUT = 18;              // 壁から離れる水平成分
 const WALL_Kick_UP = 13;               // 蹴り上げ
 const WALL_Kick_TANG = 6;
@@ -1740,6 +1739,29 @@ const _body = { fx: 0, fz: 0, rx: 0, rz: 0 };
 
 function hasMoveInput() {
   return kW() || kS() || kA() || kD();
+}
+
+function isWallAdhered() {
+  return (onWall || wallContact) && !groundedByRoof && !groundedByFloor;
+}
+
+function wallPlaneSpeedMag() {
+  const vn = player.vel.x * wallNX + player.vel.z * wallNZ;
+  const tx = player.vel.x - vn * wallNX;
+  const tz = player.vel.z - vn * wallNZ;
+  return Math.hypot(tx, tz, player.vel.y);
+}
+
+function capWallPlaneSpeed() {
+  const hs = wallPlaneSpeedMag();
+  if (hs <= RUN_MAX || hs < 1e-6) return;
+  const s = RUN_MAX / hs;
+  const vn = player.vel.x * wallNX + player.vel.z * wallNZ;
+  const tx = player.vel.x - vn * wallNX;
+  const tz = player.vel.z - vn * wallNZ;
+  player.vel.x = vn * wallNX + tx * s;
+  player.vel.y *= s;
+  player.vel.z = vn * wallNZ + tz * s;
 }
 
 // ロープ保持中に地面・屋上・壁へ接触しているか（前フレームの状態）
@@ -1834,6 +1856,7 @@ function applyBodyMoveOnWall(accel, dt) {
 // 壁を蹴って離れるジャンプ
 function wallKickJump() {
   onWall = false;
+  wallContact = false;
   wallDetachTimer = 0.45;
 
   // 壁へ向かう速度を消してから蹴る
@@ -1860,7 +1883,7 @@ function wallKickJump() {
 }
 
 function performJump() {
-  if (onWall && !groundedByRoof && !groundedByFloor) {
+  if ((onWall || wallContact) && !groundedByRoof && !groundedByFloor) {
     wallKickJump();
   } else {
     player.vel.y = JUMP_V;
@@ -1920,6 +1943,8 @@ function resolveWallContactFriction(nx, nz, staticRegime, h) {
     player.vel.x -= vn * nx;
     player.vel.z -= vn * nz;
   }
+  // 走行入力中は地面と同様に摩擦減速しない（張り付き＋加速のみ）
+  if (staticRegime && hasMoveInput()) return;
   const mu = staticRegime ? MU_STATIC : MU_DYNAMIC;
   const tangRate = staticRegime ? 18 : 4;
   player.vel.x *= (1 - mu * tangRate * h);
@@ -2048,7 +2073,15 @@ function resolveCollisions(h) {
       if (leftMouseHeld) {
         pushPlayerToWallFace(b, ext, nx, nz);
         resolveWallContactFriction(nx, nz, wallStick, h);
-        if (attached && wallStick) wallContact = true;
+        if (attached && wallStick) {
+          wallContact = true;
+          wallNX = nx;
+          wallNZ = nz;
+          wallAnchorX = b.position.x;
+          wallAnchorZ = b.position.z;
+          wallHalf = half;
+          wallTopY = topY;
+        }
         continue;
       }
 
@@ -2097,7 +2130,7 @@ function stepPhysics(dt) {
   wallDetachTimer = Math.max(0, wallDetachTimer - dt);
   jumpGraceTimer = Math.max(0, jumpGraceTimer - dt);
   if (attached) clipRopeAnchorToObstacles();
-  const canWallRun = onWall && !groundedByRoof && !groundedByFloor;
+  const canWallRun = (onWall || wallContact) && !groundedByRoof && !groundedByFloor;
   const ropeOnSurface = isRopeOnSurface();
   if (spaceQueued) {
     spaceQueued = false;
@@ -2125,7 +2158,7 @@ function stepPhysics(dt) {
       if (touchKeys.fastReel) reelRate += REEL_SPEED * 1.8;
     }
   } else {
-    const a = (grounded || canWallRun) ? (canWallRun ? WALL_RUN_ACCEL : RUN_ACCEL) : 14;
+    const a = (grounded || canWallRun) ? RUN_ACCEL : 14;
     if (canWallRun) applyBodyMoveOnWall(a, dt);
     else applyBodyMove(a, dt);
   }
@@ -2133,8 +2166,8 @@ function stepPhysics(dt) {
   const SUB = 12;
   const h = dt / SUB;
   for (let i = 0; i < SUB; i++) {
-    if (!onWall) player.vel.addScaledVector(GRAVITY, h);
-    else stabilizeWallVerticalVel();
+    if (isWallAdhered()) stabilizeWallVerticalVel();
+    else player.vel.addScaledVector(GRAVITY, h);
 
     if (attached) {
       if (!ropeOnSurface) applyBodySteer(h);
@@ -2160,7 +2193,7 @@ function stepPhysics(dt) {
     // 積分
     player.pos.addScaledVector(player.vel, h);
     resolveCollisions(h);
-    if (onWall && !leftMouseHeld) stabilizeWallVerticalVel();
+    if (isWallAdhered()) stabilizeWallVerticalVel();
   }
 
   if (onWall && !leftMouseHeld) snapToWallPlane();
@@ -2181,17 +2214,16 @@ function stepPhysics(dt) {
       player.vel.y *= (1 - GROUND_COAST_FRICTION * dt);
       player.vel.z *= (1 - GROUND_COAST_FRICTION * dt);
     }
-    const hs = onWall
-      ? Math.hypot(player.vel.x, player.vel.y, player.vel.z)
-      : Math.hypot(player.vel.x, player.vel.z);
-    if (hs > RUN_MAX) {
-      const s = RUN_MAX / hs;
-      player.vel.x *= s;
-      player.vel.y *= s;
-      player.vel.z *= s;
+    if (isWallAdhered()) capWallPlaneSpeed();
+    else {
+      const hs = Math.hypot(player.vel.x, player.vel.z);
+      if (hs > RUN_MAX) {
+        const s = RUN_MAX / hs;
+        player.vel.x *= s;
+        player.vel.z *= s;
+      }
     }
-    // 壁では入力なし時のみ垂直速度を止める
-    if (onWall) stabilizeWallVerticalVel();
+    if (isWallAdhered()) stabilizeWallVerticalVel();
   } else {
     player.vel.multiplyScalar(1 - 0.02 * dt);   // 空気抵抗（空中のみ）
   }
