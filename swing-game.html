@@ -917,9 +917,12 @@ function cancelMobileGrapple() {
 }
 
 function handleMobileDoubleTapOnRelease() {
+  const shouldWallKick = (isWallAdhered() || lastWallAdhered)
+    && !groundedByFloor && !groundedByRoof;
   cancelMobileGrapple();
   leftMouseHeld = false;
-  spaceQueued = true;
+  if (shouldWallKick) wallKickJump();
+  else spaceQueued = true;
 }
 
 function stickHasDirectionInput(p) {
@@ -1678,6 +1681,7 @@ const WALL_Kick_OUT = 18;              // 壁から離れる水平成分
 const WALL_Kick_UP = 13;               // 蹴り上げ
 const WALL_Kick_TANG = 6;
 let wallDetachTimer = 0;
+let lastWallAdhered = false;         // 直前フレームで壁に吸着していた（ダブルタップ壁蹴り用）
 let jumpGraceTimer = 0;              // ジャンプ直後は着地スナップを無効化
 let spaceQueued = false;             // Space は押した瞬間だけジャンプ
 const tmp = new THREE.Vector3();
@@ -1857,6 +1861,7 @@ function applyBodyMoveOnWall(accel, dt) {
 function wallKickJump() {
   onWall = false;
   wallContact = false;
+  lastWallAdhered = false;
   wallDetachTimer = 0.45;
 
   // 壁へ向かう速度を消してから蹴る
@@ -2066,6 +2071,8 @@ function resolveCollisions(h) {
 
     // 側面の壁（屋上より下。地面付近からの接触も含む）
     if (ox > -WALL_SKIN && oz > -WALL_SKIN && canAttachToWall(feetY, topY)) {
+      // 壁蹴り離脱中は再吸着・位置スナップ・摩擦をかけない
+      if (wallDetachTimer > 0 && !leftMouseHeld) continue;
       const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
       if (depth <= 0) continue;
       const { nx, nz } = wallNormalFromPenetration(dx, dz, ox, oz);
@@ -2206,6 +2213,8 @@ function stepPhysics(dt) {
     groundedByFloor = true;
   }
   grounded = !attached && (groundedByRoof || groundedByFloor || onWall);
+  if (isWallAdhered()) lastWallAdhered = true;
+  else if (wallDetachTimer <= 0) lastWallAdhered = false;
 
   const canRunCap = (grounded || ropeOnSurface) && jumpGraceTimer <= 0;
   if (canRunCap) {
@@ -2280,6 +2289,7 @@ function resetGame() {
   _prevVel.set(0, 0, 0);
   onWall = false;
   wallDetachTimer = 0;
+  lastWallAdhered = false;
   jumpGraceTimer = 0;
   spaceQueued = false;
   wallNX = 0; wallNZ = 0;
