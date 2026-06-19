@@ -19,7 +19,9 @@
   }
 
   #hud {
-    position: fixed; top: 16px; left: 16px;
+    position: fixed;
+    top: max(52px, calc(env(safe-area-inset-top, 0px) + 44px));
+    left: max(12px, env(safe-area-inset-left, 0px));
     color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
     font-size: 14px; line-height: 1.6; text-shadow: 0 1px 3px #000;
     pointer-events: none; user-select: none;
@@ -58,10 +60,15 @@
   }
 
   #options-btn {
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-    z-index: 20; padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(127,208,255,0.35);
-    background: rgba(20,30,55,0.85); color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
-    font-size: 13px; cursor: pointer; user-select: none;
+    position: fixed;
+    top: max(8px, env(safe-area-inset-top, 0px));
+    left: max(8px, env(safe-area-inset-left, 0px));
+    z-index: 20; width: 40px; height: 40px; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 10px; border: 1px solid rgba(127,208,255,0.35);
+    background: rgba(20,30,55,0.85); color: #cfe3ff;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 20px; line-height: 1; cursor: pointer; user-select: none;
     transition: background .15s, border-color .15s;
   }
   #options-btn:hover { background: rgba(35,50,85,0.95); border-color: rgba(127,208,255,0.6); }
@@ -118,9 +125,7 @@
   body.touch-mode #hud-desktop { display: none; }
   body.touch-mode #hud-mobile { display: block; }
   body.touch-mode #hint { font-size: 13px; padding: 8px 14px; max-width: 92vw; text-align: center; }
-  body.touch-mode #options-btn { top: max(12px, env(safe-area-inset-top, 0px)); }
   body.touch-mode #stats { top: max(12px, env(safe-area-inset-top, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); }
-  body.touch-mode #hud { top: max(12px, env(safe-area-inset-top, 0px)); left: max(12px, env(safe-area-inset-left, 0px)); }
 
   #touch-stick {
     position: fixed; left: 0; top: 0; width: 120px; height: 120px;
@@ -189,13 +194,13 @@
   </div>
   <div id="hud-mobile">
     <div><span class="key">タップ</span>：離してワイヤー発射（再タップで次を発射）</div>
-    <div><span class="key">ダブルタップ</span>：ジャンプ（地上グラップ中は離地／空中グラップ中は手放し）</div>
+    <div><span class="key">ダブルタップ</span>：グラップをキャンセルしてジャンプ</div>
     <div><span class="key">画面上半</span>スライド：カメラ　<span class="key">下半</span>スライド：移動</div>
-    <div><span class="key">2本指</span>：カメラ　<span class="key">ダブルタップ長押し</span>：高速巻き取り（地上グラップ中は離地）</div>
+    <div><span class="key">2本指</span>：カメラ　<span class="key">長押し</span>（方向入力なし）：高速巻き取り</div>
   </div>
 </div>
 
-<button id="options-btn" type="button" title="オプション (Esc)">⚙ オプション</button>
+<button id="options-btn" type="button" title="オプション (Esc)" aria-label="オプション">⚙</button>
 
 <div id="options-panel" class="hidden" aria-hidden="true">
   <div class="options-dialog" role="dialog" aria-labelledby="options-title">
@@ -405,7 +410,7 @@ function applyControlMode(mode) {
   document.body.classList.toggle('touch-mode', mode === 'mobile');
   document.body.classList.add('mode-ready');
   hudHint.innerHTML = mode === 'mobile'
-    ? 'タップ離しで発射。下半スライドで移動、上半／2本指でカメラ、ダブルタップでジャンプ'
+    ? 'タップ離しで発射。下半スライドで移動、上半／2本指でカメラ、ダブルタップでキャンセル＋ジャンプ'
     : '自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）';
   document.getElementById('control-mode-panel').classList.add('hidden');
   document.getElementById('control-mode-panel').setAttribute('aria-hidden', 'true');
@@ -899,37 +904,38 @@ function mobileTapFire(clientX, clientY) {
   fireAnchorProjectile(clientX, clientY);
 }
 
-function isGrappleOnGround() {
-  return attached && (groundedByFloor || groundedByRoof);
-}
-
 function isMobileGrappling() {
   return attached || anchorPhase === 'out';
 }
 
-function handleMobileDoubleTapOnRelease() {
-  if (isGrappleOnGround()) {
-    swingJumpFromGround();
-  } else if (isMobileGrappling()) {
-    endAnchorHold();
-  } else {
-    spaceQueued = true;
-  }
-}
-
-function cancelMobileOutboundAnchor() {
+function cancelMobileGrapple() {
+  if (attached) release();
   if (anchorPhase === 'out') {
     beginAnchorReturn(false);
     leftMouseHeld = false;
   }
 }
 
+function handleMobileDoubleTapOnRelease() {
+  cancelMobileGrapple();
+  leftMouseHeld = false;
+  spaceQueued = true;
+}
+
+function stickHasDirectionInput(p) {
+  if (!p || !p.slid || p.camTouch) return false;
+  const { nx, ny } = stickNormFromFinger(p.x, p.y);
+  return Math.hypot(nx, ny) > STICK_DEADZONE;
+}
+
 function updateMobileHoldReel(p) {
-  if (!p || !p.holdReel || !p.awaitDoubleTap || !attached) return;
-  touchKeys.fastReel = true;
-  if ((groundedByFloor || groundedByRoof) && !p.groundReelJumped) {
-    p.groundReelJumped = true;
-    swingJumpFromGround();
+  if (!p || !attached) return;
+  if (p.slid && p.camTouch) return;
+  if (stickHasDirectionInput(p)) return;
+
+  const elapsed = performance.now() - p.startTime;
+  if (elapsed >= TAP_MAX_MS || (p.holdReel && p.awaitDoubleTap)) {
+    touchKeys.fastReel = true;
   }
 }
 
@@ -961,9 +967,9 @@ function worldToScreen(worldPos, out) {
   return out;
 }
 
-function hideTouchStick() {
+function hideTouchStick(clearPointer = true) {
   stickActive = false;
-  stickPointerId = null;
+  if (clearPointer) stickPointerId = null;
   if (touchStickEl) touchStickEl.classList.remove('visible');
   if (touchStickKnob) touchStickKnob.style.transform = 'translate(0px, 0px)';
 }
@@ -1052,9 +1058,9 @@ function pointerMidpoint() {
 function refreshTouchModes() {
   clearTouchKeys();
   if (camTwoFinger) return;
-  if (stickActive && stickPointerId !== null) {
+  if (stickPointerId !== null) {
     const p = activePointers.get(stickPointerId);
-    if (p && p.slid && !isSlideCamZone(p.y)) updateStickFromFinger(p.x, p.y);
+    if (p && p.slid && !p.camTouch) updateStickFromFinger(p.x, p.y);
   }
   for (const p of activePointers.values()) updateMobileHoldReel(p);
 }
@@ -1418,13 +1424,14 @@ canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 function handleMobilePointerDown(e) {
   const now = performance.now();
+  const camTouch = isSlideCamZone(e.clientY);
   activePointers.set(e.pointerId, {
     x: e.clientX, y: e.clientY,
     startX: e.clientX, startY: e.clientY,
     startTime: now,
     lastCamX: e.clientX, lastCamY: e.clientY,
     slid: false,
-    groundReelJumped: false,
+    camTouch,
   });
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
 
@@ -1443,7 +1450,7 @@ function handleMobilePointerDown(e) {
   }
 
   if (activePointers.size === 1 && isWithinDoubleTapWindow(e.clientX, e.clientY, now)) {
-    cancelMobileOutboundAnchor();
+    cancelMobileGrapple();
     const entry = activePointers.get(e.pointerId);
     if (entry) {
       entry.awaitDoubleTap = true;
@@ -1454,7 +1461,13 @@ function handleMobilePointerDown(e) {
   if (e.button === 0 || e.pointerType === 'touch') {
     anchorPointerId = e.pointerId;
     stickPointerId = e.pointerId;
-    showTouchStick(e.clientX, e.clientY);
+    stickOriginX = e.clientX;
+    stickOriginY = e.clientY;
+    if (camTouch) {
+      hideTouchStick(false);
+    } else {
+      showTouchStick(e.clientX, e.clientY);
+    }
   }
 }
 
@@ -1506,15 +1519,16 @@ function handleMobilePointerMove(e) {
     return;
   }
 
-  if (stickActive && e.pointerId === stickPointerId && p) {
+  if (e.pointerId === stickPointerId && p) {
     if (!p.slid) {
-      updateStickVisualFromFinger(e.clientX, e.clientY);
+      if (!p.camTouch) updateStickVisualFromFinger(e.clientX, e.clientY);
       clearTouchKeys();
-    } else if (isSlideCamZone(e.clientY)) {
+    } else if (p.camTouch) {
+      hideTouchStick(false);
       applyMobileSlideCamera(p, e.clientX, e.clientY);
-      updateStickVisualFromFinger(e.clientX, e.clientY);
       clearTouchKeys();
     } else {
+      if (!stickActive) showTouchStick(stickOriginX, stickOriginY);
       updateStickFromFinger(e.clientX, e.clientY);
     }
   }
