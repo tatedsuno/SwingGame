@@ -1982,6 +1982,7 @@ const WALL_Kick_TANG = 6;
 let wallDetachTimer = 0;
 let lastWallAdhered = false;         // 直前フレームで壁に吸着していた（ダブルタップ壁蹴り用）
 let jumpGraceTimer = 0;              // ジャンプ直後は着地スナップを無効化
+let surfaceFastReelLaunched = false; // 地上・壁・屋上で高速巻き取り開始時の離地済み
 let spaceQueued = false;             // Space 短押し離しでジャンプ（グラップ中は押下中が高速巻き取り）
 let spaceDownAt = 0;
 const tmp = new THREE.Vector3();
@@ -2258,6 +2259,20 @@ function swingJumpFromGround() {
   grounded = false;
 }
 
+// 地上・壁・屋上で高速巻き取りを始める前に一度だけ離地する
+function performSurfaceFastReelJump() {
+  if (groundedByFloor || player.pos.y <= FLOOR + 0.15) {
+    swingJumpFromGround();
+  } else {
+    swingJump();
+  }
+  groundedByFloor = false;
+  groundedByRoof = false;
+  onWall = false;
+  wallContact = false;
+  grounded = false;
+}
+
 // 壁の垂直速度：入力がないときだけ止める（W/S の移動を妨げない）
 function stabilizeWallVerticalVel() {
   if (!kW() && !kS()) player.vel.y = 0;
@@ -2507,7 +2522,15 @@ function stepPhysics(dt) {
   jumpGraceTimer = Math.max(0, jumpGraceTimer - dt);
   if (attached) clipRopeAnchorToObstacles();
   const canWallRun = (onWall || wallContact) && !groundedByRoof && !groundedByFloor;
-  const ropeOnSurface = isRopeOnSurface();
+
+  if (!isFastReelActive()) {
+    surfaceFastReelLaunched = false;
+  } else if (!surfaceFastReelLaunched && isRopeOnSurface()) {
+    performSurfaceFastReelJump();
+    surfaceFastReelLaunched = true;
+  }
+
+  const ropeOnSurface = isRopeOnSurface() && !(surfaceFastReelLaunched && jumpGraceTimer > 0);
   if (spaceQueued) {
     spaceQueued = false;
     if (attached) {
@@ -2662,6 +2685,7 @@ function resetGame() {
   wallDetachTimer = 0;
   lastWallAdhered = false;
   jumpGraceTimer = 0;
+  surfaceFastReelLaunched = false;
   spaceQueued = false;
   spaceDownAt = 0;
   wallNX = 0; wallNZ = 0;
