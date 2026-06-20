@@ -1014,7 +1014,7 @@ function applyMobileSlideCamera(p, clientX, clientY) {
   faceYaw = camYaw;
   p.lastCamX = clientX;
   p.lastCamY = clientY;
-  camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+  markManualCameraInput();
   dragging = true;
 }
 
@@ -1524,6 +1524,14 @@ let faceYaw = 0;                       // プレイヤー体の向き（WASD の
 const CAM_YAW_RATE = 2.8;              // カメラの追従速度（低いほど酔いにくい）
 const TURN_RATE = 2.2;                 // W/S 時にカメラ方向へ体を向ける速度
 const CAM_AUTO_RETURN_DELAY = 3;       // 手動操作後、背面追従を再開するまで [s]
+
+function isManualCameraActive() {
+  return dragging || camAutoReturnTimer > 0;
+}
+
+function markManualCameraInput() {
+  camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+}
 let camAutoReturnTimer = 0;
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -1567,6 +1575,7 @@ function handleMobilePointerDown(e) {
 function handlePcPointerDown(e) {
   if (e.button === 2) {
     dragging = true;
+    markManualCameraInput();
     lastX = e.clientX;
     lastY = e.clientY;
   } else if (e.button === 0) {
@@ -1625,6 +1634,7 @@ function handlePcPointerMove(e) {
       camPitch += (e.clientY - lastY) * sens;
       camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
       faceYaw = camYaw;
+      markManualCameraInput();
     }
     lastX = e.clientX;
     lastY = e.clientY;
@@ -1650,7 +1660,7 @@ function handleMobilePointerUp(e) {
 
   if (p && p.slid && p.camTouch) {
     dragging = false;
-    camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+    markManualCameraInput();
   }
 
   if (wasStick) {
@@ -1690,7 +1700,7 @@ function handleMobilePointerUp(e) {
 function handlePcPointerUp(e) {
   if (e.button === 2) {
     dragging = false;
-    camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+    markManualCameraInput();
   }
   if (e.button === 0) endAnchorHold();
   mouse.x = e.clientX;
@@ -2461,7 +2471,7 @@ function applyEdgeCameraTurn(dt) {
   camYaw -= yawTurn * EDGE_YAW_RATE * dt;
   camPitch += pitchTurn * EDGE_PITCH_RATE * dt;
   camPitch = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
-  camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+  markManualCameraInput();
   return true;
 }
 
@@ -2563,12 +2573,17 @@ function updateCamera(dt) {
     if (camAutoReturnTimer > 0) camAutoReturnTimer = Math.max(0, camAutoReturnTimer - dt);
   }
 
+  const manualCam = isManualCameraActive();
   const freeFall = isFreeFalling();
-  const manualView = dragging || camAutoReturnTimer > 0;
-  const freeLook = manualView || freeFall;
-  const allowAutoReturn = !manualView && !freeFall;
 
-  if (!dragging && !freeFall) {
+  if (manualCam) {
+    faceYaw = camYaw;
+    chaseYaw = camYaw;
+    smoothCamYaw = camYaw;
+  } else if (freeFall) {
+    faceYaw = camYaw;
+    chaseYaw = camYaw;
+  } else {
     const velYaw = chaseYawFromVelocity();
     let targetYaw = faceYaw;
     if (velYaw !== null) {
@@ -2577,19 +2592,13 @@ function updateCamera(dt) {
       targetYaw = lerpAngle(faceYaw, velYaw, w);
     }
     chaseYaw = lerpAngle(chaseYaw, targetYaw, Math.min(1, dt * 5));
-
-    if (allowAutoReturn) {
-      camYaw = lerpAngle(camYaw, chaseYaw, yawFollow);
-      camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
-    }
+    camYaw = lerpAngle(camYaw, chaseYaw, yawFollow);
+    camPitch += (0.28 - camPitch) * Math.min(1, dt * 1.8);
 
     if (kW() || kS()) {
       const rate = attached ? TURN_RATE * 0.55 : TURN_RATE;
       faceYaw = lerpAngle(faceYaw, camYaw, Math.min(1, dt * rate));
     }
-  } else {
-    faceYaw = camYaw;
-    chaseYaw = camYaw;
   }
 
   _focusTarget.set(player.pos.x, player.pos.y + 3, player.pos.z);
@@ -2603,13 +2612,14 @@ function updateCamera(dt) {
   const distRate = pullExtra > 0.5 ? DIST_PULL_RATE : DIST_RETURN_RATE;
   frameDist += (targetDist - frameDist) * Math.min(1, dt * distRate);
 
-  const picked = pickCameraYaw(freeLook ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
-  const aimYaw = freeLook ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
-  if (freeLook) smoothCamYaw = camYaw;
+  const useManualCam = manualCam || freeFall;
+  const picked = pickCameraYaw(useManualCam ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
+  const aimYaw = useManualCam ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
+  if (useManualCam) smoothCamYaw = camYaw;
   else smoothCamYaw = aimYaw;
 
   buildCameraDir(aimYaw, camPitch, camDir);
-  let useDist = freeLook
+  let useDist = useManualCam
     ? cameraClearDist(camFocus, camDir, frameDist)
     : picked.dist;
   useDist = cameraDistAboveGround(camFocus, camDir, useDist);
