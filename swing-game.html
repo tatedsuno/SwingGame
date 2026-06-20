@@ -189,7 +189,7 @@
   <div id="hud-desktop">
     <div><span class="key">左クリック</span>：ワイヤー発射（押し続けでスイング）／<span class="key">離す</span>：手放す</div>
     <div><span class="key">スイング中</span>：<span class="key">W</span>で短く <span class="key">S</span>で長く ／ <span class="key">A/D</span>左右操舵</div>
-    <div><span class="key">Space</span>：ジャンプ（スイング中は高速巻き取り）　<span class="key">WASD</span>：地上・空中・壁の移動</div>
+    <div><span class="key">Space</span>：ジャンプ（グラップ中は<span class="key">押下</span>で高速巻き取り、短く離すとスイングジャンプ）　<span class="key">WASD</span>：地上・空中・壁の移動</div>
     <div><span class="key">右ドラッグ</span>または<span class="key">画面端</span>：カメラ操作 ／ <span class="key">R</span>：最初から ／ <span class="key">Esc</span>：オプション</div>
   </div>
   <div id="hud-mobile">
@@ -779,17 +779,31 @@ function resetWorld() {
 }
 
 // ============================================================
-//  ワイヤー（太い円柱で見やすく）
+//  ワイヤー（たわみ付き・太い円柱で見やすく）
 // ============================================================
+const wireMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 const wire = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.12, 0.12, 1, 6),   // 長さ1の単位円柱を scale.y で伸ばす
-  new THREE.MeshBasicMaterial({ color: 0xffffff })
+  new THREE.CylinderGeometry(0.12, 0.12, 1, 6),
+  wireMat
 );
 wire.visible = false;
 scene.add(wire);
+const WIRE_PARTS = 12;
+const wirePartGeo = new THREE.CylinderGeometry(0.12, 0.12, 1, 5);
+const wireParts = [];
+for (let i = 0; i < WIRE_PARTS; i++) {
+  const seg = new THREE.Mesh(wirePartGeo, wireMat);
+  seg.visible = false;
+  scene.add(seg);
+  wireParts.push(seg);
+}
 const _up = new THREE.Vector3(0, 1, 0);
 const _wireDir = new THREE.Vector3();
 const _wireMid = new THREE.Vector3();
+const _wireCtrl = new THREE.Vector3();
+const _wirePtA = new THREE.Vector3();
+const _wirePtB = new THREE.Vector3();
+const WIRE_SAG_AUTO_REEL = 300;   // 自動巻き取り：たわみ解消速度 [m/s]（プレイヤーは動かさない）
 
 // アンカー地点のマーカー
 const anchorMark = new THREE.Mesh(
@@ -938,6 +952,7 @@ function startAnchorReturnFromGrapple() {
   if (!attached) return;
   attached = false;
   attachObject = null;
+  hideWireParts();
   _prevVel.copy(player.vel);
   projectilePos.copy(anchor);
   anchorMark.position.copy(anchor);
@@ -982,7 +997,8 @@ function updateMobileHoldReel(p) {
   if (p.slid && p.camTouch) return;
 
   const elapsed = performance.now() - p.startTime;
-  const canStartHoldReel = !p.slid || !stickHasDirectionInput(p);
+  const steerOnly = p.slid && stickHasDirectionInput(p);
+  const canStartHoldReel = !steerOnly || !isRopeOnSurface();
   if (canStartHoldReel && (elapsed >= TAP_MAX_MS || (p.holdReel && p.awaitDoubleTap))) {
     p.fastReelHeld = true;
   }
@@ -1213,11 +1229,17 @@ window.addEventListener('keydown', e => {
   keys[e.code] = true;
   if (e.code === 'Space') {
     e.preventDefault();
-    spaceQueued = true;
+    if (spaceDownAt <= 0) spaceDownAt = performance.now();
+    if (!attached) spaceQueued = true;
   }
   if (e.code === 'KeyR') resetGame();
 });
-window.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('keyup', e => {
+  keys[e.code] = false;
+  if (e.code !== 'Space' || spaceDownAt <= 0) return;
+  if (attached && performance.now() - spaceDownAt < TAP_MAX_MS) spaceQueued = true;
+  spaceDownAt = 0;
+});
 
 function storeAttachSurface(hit) {
   attachObject = hit.object;
@@ -1360,11 +1382,9 @@ function completeAttachFromHit(hit) {
     fireAnchor.copy(hit.point).addScaledVector(attachFaceNormal, 0.04);
   }
   anchor.copy(fireAnchor);
-  ropeLength = player.pos.distanceTo(anchor);
-  if (!isAnchorOnCurrentSurface(anchor)) {
-    const pull = THREE.MathUtils.clamp(ropeLength * 0.6, 14, 55);
-    player.vel.addScaledVector(anchor.clone().sub(player.pos).normalize(), pull);
-  }
+  const len = player.pos.distanceTo(anchor);
+  const grappleSlack = Math.max(2, len * 0.025);
+  ropeLength = len + grappleSlack;
   attached = true;
   anchorPhase = 'idle';
   onWall = false;
@@ -1384,7 +1404,50 @@ function beginAnchorReturn(missed) {
 function finishAnchorReturn() {
   anchorPhase = 'idle';
   wire.visible = false;
+  hideWireParts();
   anchorMark.visible = false;
+}
+
+function hideWireParts() {
+  for (const p of wireParts) p.visible = false;
+}
+
+function wireSlack(wireLen, dist) {
+  return Math.max(0, wireLen - dist);
+}
+
+function wireSagDrop(slack, dist) {
+  if (slack < 0.12) return 0;
+  return Math.min(slack * 0.62 + Math.sqrt(slack) * 0.38, dist * 0.42);
+}
+
+function wireBezierPoint(from, to, sagDrop, t, out) {
+  _wireCtrl.lerpVectors(from, to, 0.5);
+  if (sagDrop > 0) _wireCtrl.y -= sagDrop;
+  const u = 1 - t;
+  const uu = u * u;
+  const tt = t * t;
+  const ut2 = 2 * u * t;
+  out.set(
+    uu * from.x + ut2 * _wireCtrl.x + tt * to.x,
+    uu * from.y + ut2 * _wireCtrl.y + tt * to.y,
+    uu * from.z + ut2 * _wireCtrl.z + tt * to.z
+  );
+  return out;
+}
+
+function placeWireSegment(mesh, a, b, thinFactor) {
+  _wireDir.subVectors(b, a);
+  const len = _wireDir.length();
+  if (len < 1e-4) {
+    mesh.visible = false;
+    return;
+  }
+  _wireMid.addVectors(a, b).multiplyScalar(0.5);
+  mesh.position.copy(_wireMid);
+  mesh.scale.set(thinFactor, len, thinFactor);
+  mesh.quaternion.setFromUnitVectors(_up, _wireDir.normalize());
+  mesh.visible = true;
 }
 
 function updateWireBetween(from, to, thinFactor) {
@@ -1395,6 +1458,114 @@ function updateWireBetween(from, to, thinFactor) {
   wire.position.copy(_wireMid);
   wire.scale.set(thinFactor, len, thinFactor);
   wire.quaternion.setFromUnitVectors(_up, _wireDir.normalize());
+}
+
+function updateWireVisual(from, to, wireLen, thinFactor, forceTaut = false) {
+  const dist = from.distanceTo(to);
+  if (dist < 1e-4) return;
+
+  if (forceTaut) {
+    wireMat.color.setHex(0xffffff);
+    hideWireParts();
+    wire.visible = true;
+    updateWireBetween(from, to, thinFactor);
+    return;
+  }
+
+  const slack = wireSlack(wireLen, dist);
+  const sagDrop = wireSagDrop(slack, dist);
+  const sagging = sagDrop > 0.05;
+  wireMat.color.setHex(sagging ? 0x7ec8ff : 0xffffff);
+
+  if (!sagging) {
+    hideWireParts();
+    wire.visible = true;
+    updateWireBetween(from, to, thinFactor);
+    return;
+  }
+
+  wire.visible = false;
+  for (let i = 0; i < WIRE_PARTS; i++) {
+    const t0 = i / WIRE_PARTS;
+    const t1 = (i + 1) / WIRE_PARTS;
+    wireBezierPoint(from, to, sagDrop, t0, _wirePtA);
+    wireBezierPoint(from, to, sagDrop, t1, _wirePtB);
+    placeWireSegment(wireParts[i], _wirePtA, _wirePtB, thinFactor);
+  }
+}
+
+function kSpace() { return !!keys['Space']; }
+
+function isSpaceFastReelActive() {
+  return isPcControl() && attached && kSpace();
+}
+
+function isPointerHoldReelActive() {
+  if (!attached) return false;
+  const now = performance.now();
+  for (const p of activePointers.values()) {
+    if (p.fastReelHeld) return true;
+    if (!p.camTouch && now - p.startTime >= TAP_MAX_MS) return true;
+  }
+  return false;
+}
+
+function isFastReelActive() {
+  if (!attached) return false;
+  return touchKeys.fastReel
+    || isHoldFastReelActive()
+    || isPointerHoldReelActive()
+    || isSpaceFastReelActive();
+}
+
+function shouldForceWireTautVisual() {
+  return isFastReelActive();
+}
+
+function shouldPreventUnderReel() {
+  if (!attached || kS()) return false;
+  return kW() && !isFastReelActive();
+}
+
+function reconcileWireLength(h) {
+  if (!attached || kS()) return;
+  const lenNow = player.pos.distanceTo(anchor);
+  if (lenNow < 1e-4) return;
+
+  const slack = ropeLength - lenNow;
+
+  if (isFastReelActive()) {
+    if (slack > 0) {
+      ropeLength = Math.max(lenNow, ropeLength - FAST_REEL_RATE * h);
+    } else {
+      ropeLength = lenNow;
+    }
+    return;
+  }
+
+  // 自動巻き取り：たわみ（ropeLength > 距離）を帳簿上だけ解消。プレイヤー位置は変えない
+  if (slack > 0) {
+    ropeLength = Math.max(lenNow, ropeLength - WIRE_SAG_AUTO_REEL * h);
+  }
+
+  if (shouldPreventUnderReel()) {
+    ropeLength = Math.max(ropeLength, lenNow);
+  }
+}
+
+function applyFastReelForce(h) {
+  if (!attached || !isFastReelActive() || kS()) return;
+  tmp.subVectors(anchor, player.pos);
+  const len = tmp.length();
+  if (len <= MIN_ROPE) return;
+  tmp.multiplyScalar(1 / len);
+
+  const velToward = player.vel.dot(tmp);
+  const slack = Math.max(0, ropeLength - len);
+  let accel = FAST_REEL_PULL * (FAST_REEL_RATE - velToward);
+  if (slack > 0) accel += slack * FAST_REEL_SLACK_K;
+  accel = THREE.MathUtils.clamp(accel, 0, FAST_REEL_MAX_ACCEL);
+  if (accel > 0) player.vel.addScaledVector(tmp, accel * h);
 }
 
 function updateAnchorProjectile(dt) {
@@ -1510,6 +1681,7 @@ function release() {
   _prevVel.copy(player.vel);
   if (anchorPhase === 'idle') {
     wire.visible = false;
+    hideWireParts();
     anchorMark.visible = false;
   }
 }
@@ -1750,7 +1922,10 @@ function hideHint() {
 const GRAVITY = new THREE.Vector3(0, -26, 0);
 const MIN_ROPE = 4;
 const REEL_SPEED = 26;    // W/S での手動の伸縮スピード
-const AUTO_REEL = 2.5;    // 掴んでいる間じわっと自動で巻き取る（控えめ＝振り子を保つ）
+const FAST_REEL_RATE = REEL_SPEED * 1.8; // 高速巻き取り目標速度 [m/s]（46.8）
+const FAST_REEL_PULL = 300;   // 目標速度への追従ゲイン（初速を上げる）
+const FAST_REEL_SLACK_K = 30; // たるみによる追加加速
+const FAST_REEL_MAX_ACCEL = 300; // 最大加速度 [m/s²]
 const STEER = 16;         // スイング中の左右操作の加速度
 const SPRING_K = 420;     // ゴムロープの硬さの基準（大きいほど伸びにくい）
 const SPRING_DAMP = 14;   // ゴムロープの減衰（振動を抑える）
@@ -1781,7 +1956,8 @@ const WALL_Kick_TANG = 6;
 let wallDetachTimer = 0;
 let lastWallAdhered = false;         // 直前フレームで壁に吸着していた（ダブルタップ壁蹴り用）
 let jumpGraceTimer = 0;              // ジャンプ直後は着地スナップを無効化
-let spaceQueued = false;             // Space は押した瞬間だけジャンプ
+let spaceQueued = false;             // Space 短押し離しでジャンプ（グラップ中は押下中が高速巻き取り）
+let spaceDownAt = 0;
 const tmp = new THREE.Vector3();
 const _toFire = new THREE.Vector3();
 const _clipOrig = new THREE.Vector3();
@@ -1824,10 +2000,6 @@ function clipRopeAnchorToObstacles() {
   anchor.copy(fireAnchor);
   anchorMark.position.copy(anchor);
 
-  if (!kS()) {
-    const len = anchor.distanceTo(player.pos);
-    ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
-  }
 }
 
 // faceYaw から体の前方向・右方向（XZ 平面）を取得
@@ -2271,8 +2443,8 @@ function stepPhysics(dt) {
   let reelRate = 0;
   if (attached) {
     if (ropeOnSurface) {
-      reelRate = AUTO_REEL;
-      if (touchKeys.fastReel) reelRate += REEL_SPEED * 1.8;
+      reelRate = 0;
+      if (isFastReelActive()) reelRate += FAST_REEL_RATE;
       const wallRun = onWall && !groundedByRoof && !groundedByFloor;
       if (wallRun || (wallContact && !groundedByRoof && !groundedByFloor)) {
         applyBodyMoveOnWall(RUN_ACCEL, dt);
@@ -2282,8 +2454,8 @@ function stepPhysics(dt) {
         applyBodyMove(RUN_ACCEL, dt);
       }
     } else {
-      reelRate = AUTO_REEL + (kW() ? REEL_SPEED : 0) - (kS() ? REEL_SPEED : 0);
-      if (touchKeys.fastReel) reelRate += REEL_SPEED * 1.8;
+      reelRate = (kW() ? REEL_SPEED : 0) - (kS() ? REEL_SPEED : 0);
+      if (isFastReelActive()) reelRate += FAST_REEL_RATE;
     }
   } else {
     const a = (grounded || canWallRun) ? RUN_ACCEL : 14;
@@ -2299,28 +2471,28 @@ function stepPhysics(dt) {
 
     if (attached) {
       if (!ropeOnSurface) applyBodySteer(h);
-      // ロープの自然長を巻き取り（サブステップごとに少しずつ）
-      ropeLength = THREE.MathUtils.clamp(ropeLength - reelRate * h, MIN_ROPE, MAX_ROPE);
-      // ゴムのロープ：自然長より伸びた分だけアンカー方向へ引き戻す（減衰付き）
+      const preventUnder = shouldPreventUnderReel() || isFastReelActive();
       tmp.copy(player.pos).sub(anchor);
       const len = tmp.length();
-      // たるませない：S で伸ばす時以外は自然長を現在距離まで縮め、常にピンと張る
-      if (!kS()) ropeLength = Math.max(MIN_ROPE, Math.min(ropeLength, len));
+      if (!preventUnder) {
+        ropeLength = THREE.MathUtils.clamp(ropeLength - reelRate * h, MIN_ROPE, MAX_ROPE);
+      }
       if (len > 1e-4) {
-        tmp.multiplyScalar(1 / len);                 // 外向き単位ベクトル
+        applyFastReelForce(h);
+        tmp.copy(player.pos).sub(anchor).multiplyScalar(1 / len);
         const stretch = len - ropeLength;
-        if (stretch > 0) {                            // 伸びている時だけ縮もうとする
-          const radVel = player.vel.dot(tmp);         // 外向きの速度成分
-          // ロープが長いほど縮む力を強く（基準長 SPRING_REF からの倍率）
+        if (stretch > 0) {
+          const radVel = player.vel.dot(tmp);
           const sf = THREE.MathUtils.clamp(ropeLength / SPRING_REF, 0.5, 10);
           const f = SPRING_K * sf * stretch + SPRING_DAMP * Math.sqrt(sf) * radVel;
-          player.vel.addScaledVector(tmp, -f * h);    // 引き戻す＝ゴムが縮む
+          player.vel.addScaledVector(tmp, -f * h);
         }
       }
     }
     // 積分
     player.pos.addScaledVector(player.vel, h);
     resolveCollisions(h);
+    if (attached) reconcileWireLength(h);
     if (isWallAdhered()) stabilizeWallVerticalVel();
   }
 
@@ -2385,6 +2557,7 @@ function resetAnchorProjectile() {
   projectileTraveled = 0;
   if (!attached) {
     wire.visible = false;
+    hideWireParts();
     anchorMark.visible = false;
   }
 }
@@ -2414,6 +2587,7 @@ function resetGame() {
   lastWallAdhered = false;
   jumpGraceTimer = 0;
   spaceQueued = false;
+  spaceDownAt = 0;
   wallNX = 0; wallNZ = 0;
   resetWorld();
   player.pos.set(START_SLOT.wx, GROUND_Y + START_H + PLAYER_R, START_SLOT.wz);
@@ -2637,10 +2811,14 @@ function updateVisuals() {
   playerMesh.position.copy(player.pos);
 
   if (attached) {
-    // 円柱をプレイヤー〜アンカー間に配置・向け・伸ばす
-    const thin = THREE.MathUtils.clamp(ropeLength / Math.max(player.pos.distanceTo(anchor), 0.001), 0.35, 1);
-    updateWireBetween(player.pos, anchor, thin);
+    const dist = player.pos.distanceTo(anchor);
+    const tautVisual = shouldForceWireTautVisual();
+    const thin = THREE.MathUtils.clamp((tautVisual ? dist : ropeLength) / Math.max(dist, 0.001), 0.35, 1);
+    updateWireVisual(player.pos, anchor, tautVisual ? dist : ropeLength, thin, tautVisual);
   } else if (anchorPhase !== 'idle') {
+    hideWireParts();
+    wire.visible = true;
+    wireMat.color.setHex(0xffffff);
     updateWireBetween(player.pos, projectilePos, 1);
   }
 
