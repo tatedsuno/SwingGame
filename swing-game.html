@@ -20,7 +20,7 @@
 
   #hud {
     position: fixed;
-    top: max(52px, calc(env(safe-area-inset-top, 0px) + 44px));
+    top: max(12px, env(safe-area-inset-top, 0px));
     left: max(12px, env(safe-area-inset-left, 0px));
     color: #cfe3ff; font-family: "Segoe UI", system-ui, sans-serif;
     font-size: 14px; line-height: 1.6; text-shadow: 0 1px 3px #000;
@@ -61,8 +61,8 @@
 
   #options-btn {
     position: fixed;
-    top: max(8px, env(safe-area-inset-top, 0px));
-    left: max(8px, env(safe-area-inset-left, 0px));
+    bottom: max(8px, env(safe-area-inset-bottom, 0px));
+    right: max(8px, env(safe-area-inset-right, 0px));
     z-index: 20; width: 40px; height: 40px; padding: 0;
     display: flex; align-items: center; justify-content: center;
     border-radius: 10px; border: 1px solid rgba(127,208,255,0.35);
@@ -904,6 +904,13 @@ function mobileTapFire(clientX, clientY) {
     leftMouseHeld = false;
     return;
   }
+  if (!tapHitsSurface(clientX, clientY)) {
+    if (isMobileGrappling()) {
+      cancelMobileGrapple();
+      leftMouseHeld = false;
+    }
+    return;
+  }
   if (attached) release();
   if (anchorPhase !== 'idle') resetAnchorProjectile();
   leftMouseHeld = true;
@@ -1122,6 +1129,11 @@ function beginAnchorHold(clientX, clientY) {
     leftMouseHeld = false;
     return;
   }
+  if (!tapHitsSurface(clientX, clientY)) {
+    if (isMobileGrappling()) cancelMobileGrapple();
+    leftMouseHeld = false;
+    return;
+  }
   leftMouseHeld = true;
   onWall = false;
   if (!attached && anchorPhase === 'idle') fireAnchorProjectile(clientX, clientY);
@@ -1152,6 +1164,10 @@ function aimHit(clientX, clientY, maxRange = Infinity) {
 }
 
 function aimInRange(clientX, clientY) {
+  return aimHit(clientX, clientY, ANCHOR_RANGE) !== null;
+}
+
+function tapHitsSurface(clientX, clientY) {
   return aimHit(clientX, clientY, ANCHOR_RANGE) !== null;
 }
 
@@ -1400,6 +1416,7 @@ function updateAnchorProjectile(dt) {
 function fireAnchorProjectile(clientX, clientY) {
   if (anchorPhase !== 'idle' || attached) return;
   const hit = aimHit(clientX, clientY, ANCHOR_RANGE);
+  if (!hit) return;
   if (hit && isAnchorOnCurrentSurface(hit.point)
       && surfaceDistToPlayer(hit.point) < MIN_SAME_SURFACE_ANCHOR_DIST) return;
   aimDirection(clientX, clientY, projectileDir);
@@ -2371,6 +2388,7 @@ function snapCameraToPlayer() {
   buildCameraDir(smoothCamYaw, camPitch, camDir);
   camTarget.copy(camFocus).addScaledVector(camDir, picked.dist);
   camera.position.copy(camTarget);
+  clampCameraAboveGround();
   camera.lookAt(camFocus);
 }
 
@@ -2530,6 +2548,21 @@ function lerpAngle(from, to, t) {
   return from + d * t;
 }
 
+const CAM_GROUND_CLEAR = 0.55;       // カメラが地面より下に入らない余白 [m]
+
+function isFreeFalling() {
+  if (attached || anchorPhase !== 'idle') return false;
+  if (groundedByFloor || groundedByRoof || onWall || wallContact) return false;
+  return player.pos.y > FLOOR + 0.15;
+}
+
+function clampCameraAboveGround() {
+  const minY = GROUND_Y + CAM_GROUND_CLEAR;
+  if (camFocus.y < minY) camFocus.y = minY;
+  if (camera.position.y < minY) camera.position.y = minY;
+  if (camTarget.y < minY) camTarget.y = minY;
+}
+
 function updateCamera(dt) {
   const yawFollow = Math.min(1, dt * (attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE));
 
@@ -2538,10 +2571,12 @@ function updateCamera(dt) {
     if (camAutoReturnTimer > 0) camAutoReturnTimer = Math.max(0, camAutoReturnTimer - dt);
   }
 
+  const freeFall = isFreeFalling();
   const manualView = dragging || camTwoFinger || camAutoReturnTimer > 0;
-  const allowAutoReturn = !manualView;
+  const freeLook = manualView || freeFall;
+  const allowAutoReturn = !manualView && !freeFall;
 
-  if (!dragging && !camTwoFinger) {
+  if (!dragging && !camTwoFinger && !freeFall) {
     const velYaw = chaseYawFromVelocity();
     let targetYaw = faceYaw;
     if (velYaw !== null) {
@@ -2576,18 +2611,19 @@ function updateCamera(dt) {
   const distRate = pullExtra > 0.5 ? DIST_PULL_RATE : DIST_RETURN_RATE;
   frameDist += (targetDist - frameDist) * Math.min(1, dt * distRate);
 
-  const picked = pickCameraYaw(manualView ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
-  const aimYaw = manualView ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
-  if (manualView) smoothCamYaw = camYaw;
+  const picked = pickCameraYaw(freeLook ? camYaw : chaseYaw, camPitch, camFocus, frameDist);
+  const aimYaw = freeLook ? camYaw : lerpAngle(smoothCamYaw, picked.yaw, Math.min(1, dt * 7));
+  if (freeLook) smoothCamYaw = camYaw;
   else smoothCamYaw = aimYaw;
 
   buildCameraDir(aimYaw, camPitch, camDir);
-  const safeDist = manualView
+  const safeDist = freeLook
     ? cameraClearDist(camFocus, camDir, frameDist)
     : picked.dist;
 
   camTarget.copy(camFocus).addScaledVector(camDir, safeDist);
   camera.position.lerp(camTarget, Math.min(1, dt * 4));
+  clampCameraAboveGround();
   camera.lookAt(camFocus);
 }
 
