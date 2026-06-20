@@ -861,7 +861,7 @@ const TAP_MOVE_TOLERANCE = 14;
 const DOUBLE_TAP_MS = 200;
 const DOUBLE_TAP_DIST = 36;
 const NEAR_PLAYER_SCREEN_R = 52;
-const MIN_SAME_SURFACE_ANCHOR_DIST = 2.6;
+const MIN_SAME_SURFACE_ANCHOR_DIST = 10;
 const FAST_REEL_THRESHOLD = 0.55;
 
 const touchKeys = { w: false, s: false, a: false, d: false, fastReel: false };
@@ -938,15 +938,23 @@ function stickHasDirectionInput(p) {
   return Math.hypot(nx, ny) > STICK_DEADZONE;
 }
 
+function isHoldFastReelActive() {
+  for (const p of activePointers.values()) {
+    if (p.fastReelHeld) return true;
+  }
+  return false;
+}
+
 function updateMobileHoldReel(p) {
   if (!p || !attached) return;
   if (p.slid && p.camTouch) return;
-  if (stickHasDirectionInput(p)) return;
 
   const elapsed = performance.now() - p.startTime;
-  if (elapsed >= TAP_MAX_MS || (p.holdReel && p.awaitDoubleTap)) {
-    touchKeys.fastReel = true;
+  const canStartHoldReel = !p.slid || !stickHasDirectionInput(p);
+  if (canStartHoldReel && (elapsed >= TAP_MAX_MS || (p.holdReel && p.awaitDoubleTap))) {
+    p.fastReelHeld = true;
   }
+  if (p.fastReelHeld) touchKeys.fastReel = true;
 }
 
 function isSlideCamZone(clientY) {
@@ -1055,6 +1063,7 @@ function applyStickDirection(nx, ny) {
     }
     touchKeys.fastReel = false;
   }
+  if (isHoldFastReelActive()) touchKeys.fastReel = true;
 }
 
 function pointerMidpoint() {
@@ -1073,6 +1082,7 @@ function refreshTouchModes() {
     if (p && p.slid && !p.camTouch) updateStickFromFinger(p.x, p.y);
   }
   for (const p of activePointers.values()) updateMobileHoldReel(p);
+  if (isHoldFastReelActive()) touchKeys.fastReel = true;
 }
 
 function handleMobileTapRelease(p, clientX, clientY) {
@@ -1490,6 +1500,7 @@ function handleMobilePointerDown(e) {
     lastCamX: e.clientX, lastCamY: e.clientY,
     slid: false,
     camTouch,
+    fastReelHeld: false,
   });
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
 
@@ -1636,6 +1647,7 @@ function handleMobilePointerUp(e) {
       if (isQuickTap(p)) handleMobileTapRelease(p, e.clientX, e.clientY);
       p.holdReel = false;
       p.awaitDoubleTap = false;
+      p.fastReelHeld = false;
     }
   }
 
