@@ -1357,11 +1357,6 @@ function completeAttachFromHit(hit) {
     attachFaceNormal.copy(hit.normal);
     fireAnchor.copy(hit.point).addScaledVector(attachFaceNormal, 0.04);
   }
-  if (isAnchorOnCurrentSurface(anchor)
-      && surfaceDistToPlayer(anchor) < MIN_SAME_SURFACE_ANCHOR_DIST) {
-    beginAnchorReturn(true);
-    return;
-  }
   anchor.copy(fireAnchor);
   ropeLength = player.pos.distanceTo(anchor);
   if (!isAnchorOnCurrentSurface(anchor)) {
