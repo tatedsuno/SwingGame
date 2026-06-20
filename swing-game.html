@@ -955,10 +955,13 @@ function cancelMobileGrapple() {
 function handleMobileDoubleTapOnRelease() {
   const shouldWallKick = (isWallAdhered() || lastWallAdhered)
     && !groundedByFloor && !groundedByRoof;
-  cancelMobileGrapple();
   leftMouseHeld = false;
-  if (shouldWallKick) wallKickJump();
-  else spaceQueued = true;
+  if (shouldWallKick) {
+    if (attached) release();
+    wallKickJump();
+  } else {
+    spaceQueued = true;
+  }
 }
 
 function stickHasDirectionInput(p) {
@@ -1542,8 +1545,6 @@ function handleMobilePointerDown(e) {
   mouse.y = e.clientY;
 
   if (activePointers.size === 1 && isWithinDoubleTapWindow(e.clientX, e.clientY, now)) {
-    if (isMobileGrappling()) cancelMobileGrapple();
-    else leftMouseHeld = false;
     const entry = activePointers.get(e.pointerId);
     if (entry) {
       entry.awaitDoubleTap = true;
