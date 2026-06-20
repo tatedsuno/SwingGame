@@ -1924,18 +1924,23 @@ function applyBodyMoveOnWall(accel, dt) {
   player.vel.z += (mz / len) * accel * dt;
 }
 
-// 壁を蹴って離れるジャンプ
-function wallKickJump() {
+// 壁を蹴って離れるジャンプ（kickHx/kickHz は水平キック方向の単位ベクトル成分）
+function wallKickJump(kickHx = wallNX, kickHz = wallNZ) {
   onWall = false;
   wallContact = false;
   lastWallAdhered = false;
   wallDetachTimer = 0.45;
 
+  let hx = kickHx, hz = kickHz;
+  const hlen = Math.hypot(hx, hz);
+  if (hlen < 1e-6) { hx = wallNX; hz = wallNZ; }
+  else { hx /= hlen; hz /= hlen; }
+
   // 壁へ向かう速度を消してから蹴る
-  const vn = player.vel.x * wallNX + player.vel.z * wallNZ;
+  const vn = player.vel.x * hx + player.vel.z * hz;
   if (vn < 0) {
-    player.vel.x -= vn * wallNX;
-    player.vel.z -= vn * wallNZ;
+    player.vel.x -= vn * hx;
+    player.vel.z -= vn * hz;
   }
   if (player.vel.y < 0) player.vel.y = 0;
 
@@ -1947,9 +1952,9 @@ function wallKickJump() {
   }
 
   player.vel.set(
-    wallNX * WALL_Kick_OUT + tx,
+    hx * WALL_Kick_OUT + tx,
     WALL_Kick_UP,
-    wallNZ * WALL_Kick_OUT + tz
+    hz * WALL_Kick_OUT + tz
   );
   jumpGraceTimer = 0.22;
 }
@@ -2074,6 +2079,44 @@ function canAttachToWall(feetY, topY) {
   return true;
 }
 
+const CORNER_WALL_KICK_ZONE = WALL_SKIN * 3.5;
+
+// ビルの角に到達したら壁蹴りで離脱（意図しない角吸着を防ぐ）
+function tryCornerWallKick(b, half, ox, oz, dx, dz, wasOnWall) {
+  if (wallDetachTimer > 0 || leftMouseHeld) return false;
+  if (groundedByRoof || groundedByFloor) return false;
+
+  const ext = half + PLAYER_R;
+  const cornerZone = CORNER_WALL_KICK_ZONE;
+  const onSameBuilding = wallAnchorX === b.position.x && wallAnchorZ === b.position.z;
+  const adhered = wasOnWall || lastWallAdhered;
+
+  // 角の nook（両側面が同時に近い）
+  const inCornerNook = ox > -WALL_SKIN && oz > -WALL_SKIN && ox < cornerZone && oz < cornerZone;
+  if (inCornerNook && adhered) {
+    tmp.set(dx, 0, dz);
+    if (tmp.lengthSq() < 1e-8) tmp.set(wallNX, 0, wallNZ);
+    wallKickJump(tmp.x, tmp.z);
+    return true;
+  }
+
+  if (!wasOnWall || !onSameBuilding) return false;
+
+  // 壁面の端へ到達（走行方向の角）
+  if (wallNX !== 0) {
+    if (ox > -WALL_SKIN && Math.abs(dz) > ext - cornerZone) {
+      wallKickJump();
+      return true;
+    }
+  } else if (wallNZ !== 0) {
+    if (oz > -WALL_SKIN && Math.abs(dx) > ext - cornerZone) {
+      wallKickJump();
+      return true;
+    }
+  }
+  return false;
+}
+
 // 前フレームの壁に近ければ張り付きを維持
 function tryKeepWallStick() {
   if (leftMouseHeld || groundedByRoof || groundedByFloor) return false;
@@ -2140,6 +2183,7 @@ function resolveCollisions(h) {
     if (ox > -WALL_SKIN && oz > -WALL_SKIN && canAttachToWall(feetY, topY)) {
       // 壁蹴り離脱中は再吸着・位置スナップ・摩擦をかけない
       if (wallDetachTimer > 0 && !leftMouseHeld) continue;
+      if (tryCornerWallKick(b, half, ox, oz, dx, dz, wasOnWall)) continue;
       const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
       if (depth <= 0) continue;
       const { nx, nz } = wallNormalFromPenetration(dx, dz, ox, oz);
@@ -2178,14 +2222,21 @@ function resolveCollisions(h) {
     onWall = false;
   } else if (bestWall && wallStick && !leftMouseHeld && wallDetachTimer <= 0
       && canAttachToWall(feetY, bestWall.topY)) {
-    onWall = true;
-    wallNX = bestWall.nx;
-    wallNZ = bestWall.nz;
-    wallAnchorX = bestWall.bx;
-    wallAnchorZ = bestWall.bz;
-    wallHalf = bestWall.half;
-    wallTopY = bestWall.topY;
-    snapToWallPlane();
+    const faceChanged = wasOnWall
+      && wallAnchorX === bestWall.bx && wallAnchorZ === bestWall.bz
+      && (bestWall.nx !== wallNX || bestWall.nz !== wallNZ);
+    if (faceChanged) {
+      wallKickJump(wallNX + bestWall.nx, wallNZ + bestWall.nz);
+    } else {
+      onWall = true;
+      wallNX = bestWall.nx;
+      wallNZ = bestWall.nz;
+      wallAnchorX = bestWall.bx;
+      wallAnchorZ = bestWall.bz;
+      wallHalf = bestWall.half;
+      wallTopY = bestWall.topY;
+      snapToWallPlane();
+    }
   } else if (!leftMouseHeld && tryLandOnGround()) {
     groundedByFloor = true;
     onWall = false;
