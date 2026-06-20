@@ -900,6 +900,23 @@ function isWithinDoubleTapWindow(clientX, clientY, now = performance.now()) {
     && Math.hypot(clientX - lastTapUpX, clientY - lastTapUpY) < DOUBLE_TAP_DIST;
 }
 
+function prepareRefireAnchor() {
+  attached = false;
+  attachObject = null;
+  _prevVel.copy(player.vel);
+  anchorPhase = 'idle';
+}
+
+function tryFireAnchorFromTap(clientX, clientY) {
+  if (anchorPhase === 'return') return false;
+  if (attached) prepareRefireAnchor();
+  else if (anchorPhase !== 'idle') return false;
+  leftMouseHeld = true;
+  onWall = false;
+  fireAnchorProjectile(clientX, clientY);
+  return true;
+}
+
 function mobileTapFire(clientX, clientY) {
   if (isNearPlayerTap(clientX, clientY)) {
     if (isMobileGrappling()) cancelMobileGrapple();
@@ -910,14 +927,7 @@ function mobileTapFire(clientX, clientY) {
     cancelMobileGrapple();
     return;
   }
-  if (anchorPhase !== 'idle') return;
-  if (attached) {
-    cancelMobileGrapple();
-    return;
-  }
-  leftMouseHeld = true;
-  onWall = false;
-  fireAnchorProjectile(clientX, clientY);
+  tryFireAnchorFromTap(clientX, clientY);
 }
 
 function isMobileGrappling() {
@@ -1146,21 +1156,10 @@ function beginAnchorHold(clientX, clientY) {
   }
   if (!tapHitsSurface(clientX, clientY)) {
     if (isMobileGrappling()) cancelMobileGrapple();
-    else if (anchorPhase === 'idle' && !attached) {
-      leftMouseHeld = true;
-      onWall = false;
-      fireAnchorProjectile(clientX, clientY);
-    }
+    else tryFireAnchorFromTap(clientX, clientY);
     return;
   }
-  if (anchorPhase !== 'idle') return;
-  if (attached) {
-    cancelMobileGrapple();
-    return;
-  }
-  leftMouseHeld = true;
-  onWall = false;
-  fireAnchorProjectile(clientX, clientY);
+  tryFireAnchorFromTap(clientX, clientY);
 }
 
 function endAnchorHold() {
