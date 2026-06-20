@@ -194,9 +194,9 @@
   </div>
   <div id="hud-mobile">
     <div><span class="key">タップ</span>：離してワイヤー発射（再タップで次を発射）</div>
-    <div><span class="key">ダブルタップ</span>：グラップをキャンセルしてジャンプ</div>
-    <div><span class="key">画面上半</span>スライド：カメラ　<span class="key">下半</span>スライド：移動</div>
-    <div><span class="key">2本指</span>：カメラ　<span class="key">長押し</span>（方向入力なし）：高速巻き取り</div>
+    <div><span class="key">ダブルタップ</span>：グラップ解除またはジャンプ</div>
+    <div><span class="key">画面上半</span>スライド：カメラ　<span class="key">下半</span>スライド：移動（空中は全体カメラ）</div>
+    <div><span class="key">長押し</span>（方向入力なし）：高速巻き取り　別指タップで移動しながらジャンプ可</div>
   </div>
 </div>
 
@@ -384,7 +384,6 @@ function setOptionsOpen(open) {
   if (open) {
     syncOptionsUI();
     dragging = false;
-    camTwoFinger = false;
     hideTouchStick();
     activePointers.clear();
     anchorPointerId = null;
@@ -410,7 +409,7 @@ function applyControlMode(mode) {
   document.body.classList.toggle('touch-mode', mode === 'mobile');
   document.body.classList.add('mode-ready');
   hudHint.innerHTML = mode === 'mobile'
-    ? 'タップ離しで発射。下半スライドで移動、上半／2本指でカメラ、ダブルタップでキャンセル＋ジャンプ'
+    ? 'タップ離しで発射。下半スライドで移動・上半でカメラ、空中はスライドでカメラ、ダブルタップでジャンプ'
     : '自由に動き回れる箱庭！ ビルや地面を <b>左クリック</b>で掴もう（押し続けでスイング）';
   document.getElementById('control-mode-panel').classList.add('hidden');
   document.getElementById('control-mode-panel').setAttribute('aria-hidden', 'true');
@@ -881,8 +880,6 @@ let anchorPointerId = null;
 let stickPointerId = null;
 let stickOriginX = 0, stickOriginY = 0;
 let stickActive = false;
-let camTwoFinger = false;
-let camLastMidX = 0, camLastMidY = 0;
 let lastTapUpTime = 0;
 let lastTapUpX = 0, lastTapUpY = 0;
 const _screenVec = new THREE.Vector3();
@@ -905,19 +902,19 @@ function isWithinDoubleTapWindow(clientX, clientY, now = performance.now()) {
 
 function mobileTapFire(clientX, clientY) {
   if (isNearPlayerTap(clientX, clientY)) {
-    cancelMobileGrapple();
+    if (attached) release();
     leftMouseHeld = false;
     return;
   }
   if (!tapHitsSurface(clientX, clientY)) {
-    if (isMobileGrappling()) {
-      cancelMobileGrapple();
+    if (attached) {
+      release();
       leftMouseHeld = false;
     }
     return;
   }
+  if (anchorPhase !== 'idle') return;
   if (attached) release();
-  if (anchorPhase !== 'idle') resetAnchorProjectile();
   leftMouseHeld = true;
   onWall = false;
   fireAnchorProjectile(clientX, clientY);
@@ -929,10 +926,7 @@ function isMobileGrappling() {
 
 function cancelMobileGrapple() {
   if (attached) release();
-  if (anchorPhase === 'out') {
-    beginAnchorReturn(false);
-    leftMouseHeld = false;
-  }
+  leftMouseHeld = false;
 }
 
 function handleMobileDoubleTapOnRelease() {
@@ -975,7 +969,14 @@ function captureMobileZoneBoundary() {
   mobileZoneBoundaryY = _playerScr.y;
 }
 
+function shouldMobileSlideCameraOnly() {
+  if (attached) return false;
+  if (groundedByFloor || groundedByRoof || onWall || wallContact) return false;
+  return true;
+}
+
 function isSlideCamZone(clientY) {
+  if (shouldMobileSlideCameraOnly()) return true;
   return clientY < mobileZoneBoundaryY;
 }
 
@@ -1083,17 +1084,8 @@ function applyStickDirection(nx, ny) {
   if (isHoldFastReelActive()) touchKeys.fastReel = true;
 }
 
-function pointerMidpoint() {
-  const pts = [...activePointers.values()];
-  if (pts.length < 2) return null;
-  let sx = 0, sy = 0;
-  for (const p of pts) { sx += p.x; sy += p.y; }
-  return { x: sx / pts.length, y: sy / pts.length };
-}
-
 function refreshTouchModes() {
   clearTouchKeys();
-  if (camTwoFinger) return;
   if (stickPointerId !== null) {
     const p = activePointers.get(stickPointerId);
     if (p && p.slid && !p.camTouch) updateStickFromFinger(p.x, p.y);
@@ -1135,15 +1127,16 @@ function isQuickTap(p) {
 
 function beginAnchorHold(clientX, clientY) {
   if (isNearPlayerTap(clientX, clientY)) {
-    cancelMobileGrapple();
+    if (attached) release();
     leftMouseHeld = false;
     return;
   }
   if (!tapHitsSurface(clientX, clientY)) {
-    if (isMobileGrappling()) cancelMobileGrapple();
+    if (attached) cancelMobileGrapple();
     leftMouseHeld = false;
     return;
   }
+  if (anchorPhase !== 'idle') return;
   leftMouseHeld = true;
   onWall = false;
   if (!attached && anchorPhase === 'idle') fireAnchorProjectile(clientX, clientY);
@@ -1534,19 +1527,9 @@ function handleMobilePointerDown(e) {
   mouse.x = e.clientX;
   mouse.y = e.clientY;
 
-  if (activePointers.size >= 2) {
-    hideTouchStick();
-    lastTapUpTime = 0;
-    camTwoFinger = true;
-    const mid = pointerMidpoint();
-    if (mid) { camLastMidX = mid.x; camLastMidY = mid.y; }
-    dragging = true;
-    faceYaw = camYaw;
-    return;
-  }
-
   if (activePointers.size === 1 && isWithinDoubleTapWindow(e.clientX, e.clientY, now)) {
-    cancelMobileGrapple();
+    if (attached) release();
+    leftMouseHeld = false;
     const entry = activePointers.get(e.pointerId);
     if (entry) {
       entry.awaitDoubleTap = true;
@@ -1556,13 +1539,12 @@ function handleMobilePointerDown(e) {
 
   if (e.button === 0 || e.pointerType === 'touch') {
     anchorPointerId = e.pointerId;
-    stickPointerId = e.pointerId;
-    stickOriginX = e.clientX;
-    stickOriginY = e.clientY;
-    if (camTouch) {
-      hideTouchStick(false);
-    } else {
-      showTouchStick(e.clientX, e.clientY);
+    if (stickPointerId === null || !activePointers.has(stickPointerId)) {
+      stickPointerId = e.pointerId;
+      stickOriginX = e.clientX;
+      stickOriginY = e.clientY;
+      if (camTouch) hideTouchStick(false);
+      else showTouchStick(e.clientX, e.clientY);
     }
   }
 }
@@ -1600,28 +1582,13 @@ function handleMobilePointerMove(e) {
     p.y = e.clientY;
   }
 
-  if (camTwoFinger && activePointers.size >= 2) {
-    const mid = pointerMidpoint();
-    if (mid) {
-      const sens = CAM_SENS_BASE * options.camSensitivity;
-      camYaw   -= (mid.x - camLastMidX) * sens;
-      camPitch += (mid.y - camLastMidY) * sens;
-      camPitch  = THREE.MathUtils.clamp(camPitch, -0.4, 1.25);
-      faceYaw = camYaw;
-      camLastMidX = mid.x;
-      camLastMidY = mid.y;
-      camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
-    }
-    return;
-  }
-
-  if (e.pointerId === stickPointerId && p) {
+  if (p && p.slid && p.camTouch) {
+    hideTouchStick(false);
+    applyMobileSlideCamera(p, e.clientX, e.clientY);
+    clearTouchKeys();
+  } else if (e.pointerId === stickPointerId && p) {
     if (!p.slid) {
       if (!p.camTouch) updateStickVisualFromFinger(e.clientX, e.clientY);
-      clearTouchKeys();
-    } else if (p.camTouch) {
-      hideTouchStick(false);
-      applyMobileSlideCamera(p, e.clientX, e.clientY);
       clearTouchKeys();
     } else {
       if (!stickActive) showTouchStick(stickOriginX, stickOriginY);
@@ -1666,7 +1633,27 @@ function handleMobilePointerUp(e) {
   activePointers.delete(e.pointerId);
   try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
 
-  if (wasStick) hideTouchStick();
+  if (p && p.slid && p.camTouch) {
+    dragging = false;
+    camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
+  }
+
+  if (wasStick) {
+    if (e.pointerId === stickPointerId) {
+      hideTouchStick();
+      stickPointerId = null;
+      for (const [id, op] of activePointers) {
+        if (!op.camTouch) {
+          stickPointerId = id;
+          stickOriginX = op.startX;
+          stickOriginY = op.startY;
+          if (op.slid) updateStickFromFinger(op.x, op.y);
+          else showTouchStick(op.x, op.y);
+          break;
+        }
+      }
+    }
+  }
 
   if (wasAnchor) {
     anchorPointerId = null;
@@ -1676,14 +1663,6 @@ function handleMobilePointerUp(e) {
       p.awaitDoubleTap = false;
       p.fastReelHeld = false;
     }
-  }
-
-  if (activePointers.size < 2) {
-    if (camTwoFinger) {
-      camAutoReturnTimer = CAM_AUTO_RETURN_DELAY;
-      dragging = false;
-    }
-    camTwoFinger = false;
   }
 
   if (activePointers.size === 0) clearTouchKeys();
@@ -2422,7 +2401,6 @@ function resetGame() {
   activePointers.clear();
   anchorPointerId = null;
   hideTouchStick();
-  camTwoFinger = false;
   clearTouchKeys();
   lastTapUpTime = 0;
   player.vel.set(0, 0, 0);
@@ -2579,17 +2557,17 @@ function clampCameraAboveGround() {
 function updateCamera(dt) {
   const yawFollow = Math.min(1, dt * (attached ? CAM_YAW_RATE * 0.55 : CAM_YAW_RATE));
 
-  if (!dragging && !camTwoFinger) {
+  if (!dragging) {
     applyEdgeCameraTurn(dt);
     if (camAutoReturnTimer > 0) camAutoReturnTimer = Math.max(0, camAutoReturnTimer - dt);
   }
 
   const freeFall = isFreeFalling();
-  const manualView = dragging || camTwoFinger || camAutoReturnTimer > 0;
+  const manualView = dragging || camAutoReturnTimer > 0;
   const freeLook = manualView || freeFall;
   const allowAutoReturn = !manualView && !freeFall;
 
-  if (!dragging && !camTwoFinger && !freeFall) {
+  if (!dragging && !freeFall) {
     const velYaw = chaseYawFromVelocity();
     let targetYaw = faceYaw;
     if (velYaw !== null) {
