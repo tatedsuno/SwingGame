@@ -1622,22 +1622,38 @@ function fireAnchorProjectile(clientX, clientY) {
 }
 
 // 今立っている面と同じ面へロープを撃ったか
+function getBuildingUnderPlayer() {
+  for (const b of activeBoxes) {
+    const topY = b.userData.top;
+    if (topY < -9000) continue;
+    const standY = topY + PLAYER_R;
+    if (Math.abs(player.pos.y - standY) > 0.45) continue;
+    const ext = b.userData.half;
+    if (Math.abs(player.pos.x - b.position.x) > ext + 0.3) continue;
+    if (Math.abs(player.pos.z - b.position.z) > ext + 0.3) continue;
+    return b;
+  }
+  return null;
+}
+
+function getStandingRoofBuilding() {
+  return getBuildingUnderPlayer();
+}
+
+function isHitOnRoofSurface(p, box) {
+  if (!box) return false;
+  const topY = box.userData.top;
+  const ext = box.userData.half;
+  if (Math.abs(p.y - topY) > 0.35) return false;
+  return Math.abs(p.x - box.position.x) <= ext + 0.5
+    && Math.abs(p.z - box.position.z) <= ext + 0.5;
+}
+
 function isAnchorOnCurrentSurface(p) {
   if (groundedByFloor && p.y <= GROUND_Y + 0.55) return true;
 
-  if (groundedByRoof) {
-    for (const b of activeBoxes) {
-      const topY = b.userData.top;
-      const standY = topY + PLAYER_R;
-      if (Math.abs(player.pos.y - standY) > 0.45) continue;
-      const ext = b.userData.half;
-      if (Math.abs(player.pos.x - b.position.x) > ext + 0.3) continue;
-      if (Math.abs(player.pos.z - b.position.z) > ext + 0.3) continue;
-      if (Math.abs(p.y - topY) > 0.65) continue;
-      if (Math.abs(p.x - b.position.x) <= ext + 0.5 && Math.abs(p.z - b.position.z) <= ext + 0.5)
-        return true;
-    }
-  }
+  const stand = getBuildingUnderPlayer();
+  if (stand && isHitOnRoofSurface(p, stand)) return true;
 
   if (isWallAdhered() || lastWallAdhered) {
     if (wallNX === 0 && wallNZ === 0) return false;
@@ -1655,7 +1671,8 @@ function surfaceDistToPlayer(p) {
   if (groundedByFloor && p.y <= GROUND_Y + 0.55) {
     return Math.hypot(p.x - player.pos.x, p.z - player.pos.z);
   }
-  if (groundedByRoof) {
+  const stand = getBuildingUnderPlayer();
+  if (stand && isHitOnRoofSurface(p, stand)) {
     return Math.hypot(p.x - player.pos.x, p.z - player.pos.z);
   }
   if ((isWallAdhered() || lastWallAdhered) && (wallNX !== 0 || wallNZ !== 0)) {
@@ -1684,6 +1701,13 @@ function release() {
     hideWireParts();
     anchorMark.visible = false;
   }
+}
+
+function releaseGrappleOnRoofLand() {
+  if (!attached) return;
+  release();
+  leftMouseHeld = false;
+  attachFaceNormal.set(0, 0, 0);
 }
 
 // カメラ操作（右ドラッグ）の状態
@@ -1919,17 +1943,18 @@ function hideHint() {
 // ============================================================
 //  物理：重力 ＋ 距離拘束（振り子）
 // ============================================================
-const GRAVITY = new THREE.Vector3(0, -26, 0);
+const GRAVITY = new THREE.Vector3(0, -40, 0);
 const MIN_ROPE = 4;
 const REEL_SPEED = 26;    // W/S での手動の伸縮スピード
-const FAST_REEL_RATE = REEL_SPEED * 1.8; // 高速巻き取り目標速度 [m/s]（46.8）
-const FAST_REEL_PULL = 300;   // 目標速度への追従ゲイン（初速を上げる）
+const FAST_REEL_RATE = 1000; // 高速巻き取り目標速度 [m/s]
+const FAST_REEL_PULL = 10;   // 目標速度への追従ゲイン（初速を上げる）
 const FAST_REEL_SLACK_K = 30; // たるみによる追加加速
-const FAST_REEL_MAX_ACCEL = 300; // 最大加速度 [m/s²]
+const FAST_REEL_MAX_ACCEL = 150; // 最大加速度 [m/s²]
 const STEER = 16;         // スイング中の左右操作の加速度
 const SPRING_K = 420;     // ゴムロープの硬さの基準（大きいほど伸びにくい）
 const SPRING_DAMP = 14;   // ゴムロープの減衰（振動を抑える）
 const SPRING_REF = 30;    // 基準ロープ長（これより長いと縮む力が強くなる）
+const SPRING_MIN_LEN = 5;  // この長さ以下ではバネを無効化 [m]
 const PLAYER_R = 0.5;     // プレイヤー半径＝幅1m（衝突・接地）
 const FLOOR = GROUND_Y + PLAYER_R;
 const RUN_MAX = 60 / 3.6; // 地上走行の最高速度（60 km/h）
@@ -1965,6 +1990,39 @@ const _clipOrig = new THREE.Vector3();
 const _hitN = new THREE.Vector3();
 
 // プレイヤー〜本来の接地点の直線が障害物に当たれば、その接触点を有効な接地点にする
+function isRoofAttachFace() {
+  return attached && attachFaceNormal.y > 0.65;
+}
+
+function isPlayerNearBuildingRoof(box, feetMargin = 0.45) {
+  if (!box || !box.userData || box.userData.top == null) return false;
+  const topY = box.userData.top;
+  const half = box.userData.half;
+  const feetY = player.pos.y - PLAYER_R;
+  if (feetY < topY - 0.3 || feetY > topY + feetMargin) return false;
+  const dx = Math.abs(player.pos.x - box.position.x);
+  const dz = Math.abs(player.pos.z - box.position.z);
+  return dx <= half + 0.35 && dz <= half + 0.35;
+}
+
+function shouldLandOnRoofFromGrapple() {
+  if (!attached) return true;
+  if (isFastReelActive() || kW()) return true;
+  if (isStaticFrictionRegime()) return true;
+  const hs = Math.hypot(player.vel.x, player.vel.z);
+  if (hs > FRICTION_SPEED_THRESH && Math.abs(player.vel.y) < 4) return false;
+  return Math.abs(player.vel.y) <= 2;
+}
+
+function isApproachingRoofLandOnBuilding(box) {
+  return isRoofAttachFace() && attachObject === box
+    && isPlayerNearBuildingRoof(box) && shouldLandOnRoofFromGrapple();
+}
+
+function shouldSuppressRoofGrappleWrap() {
+  return isApproachingRoofLandOnBuilding(attachObject);
+}
+
 function clipRopeAnchorToObstacles() {
   _toFire.subVectors(fireAnchor, player.pos);
   const dist = _toFire.length();
@@ -1997,7 +2055,7 @@ function clipRopeAnchorToObstacles() {
     break;
   }
 
-  if (clipHit && isNewWrapSurface(clipHit)) promoteFireAnchor(clipHit);
+  if (clipHit && isNewWrapSurface(clipHit) && !shouldSuppressRoofGrappleWrap()) promoteFireAnchor(clipHit);
   anchor.copy(fireAnchor);
   anchorMark.position.copy(anchor);
 
@@ -2270,9 +2328,8 @@ function tryLandOnGround() {
 }
 
 // 屋上に乗っているか（足元が屋上面付近でビル上）
-function tryLandOnRoof(b, ox, oz) {
+function tryLandOnRoof(b, ox, oz, wasOnRoof = false) {
   if (jumpGraceTimer > 0) return false;
-  if (attached && !isStaticFrictionRegime()) return false;
   const topY = b.userData.top;
   const r = PLAYER_R;
   const roofY = topY + r;
@@ -2280,6 +2337,10 @@ function tryLandOnRoof(b, ox, oz) {
   if (ox <= -WALL_SKIN || oz <= -WALL_SKIN) return false;
   if (feetY < topY - 0.2) return false;
   if (feetY > topY + 0.4) return false;
+  if (attached && !wasOnRoof) {
+    if (!shouldLandOnRoofFromGrapple()) return false;
+    releaseGrappleOnRoofLand();
+  }
   player.pos.y = roofY;
   player.vel.y = 0;
   groundedByRoof = true;
@@ -2327,6 +2388,7 @@ function tryKeepWallStick() {
 
 // ビル(AABB)との衝突：屋上着地・壁張り付き
 function resolveCollisions(h) {
+  const wasOnRoof = groundedByRoof;
   groundedByRoof = false;
   groundedByFloor = false;
   wallContact = false;
@@ -2352,10 +2414,14 @@ function resolveCollisions(h) {
     const roofY = topY + r;
 
     // 屋上歩行・壁登りからの屋上遷移
-    if (tryLandOnRoof(b, ox, oz)) continue;
+    if (tryLandOnRoof(b, ox, oz, wasOnRoof)) continue;
+
+    // 天井（屋上）グラップから同一ビル屋上へ着地する間だけ側面処理をスキップ
+    if (isApproachingRoofLandOnBuilding(b)) continue;
 
     // 壁登りで屋上を超えた：水平方向がビル上なら屋上へスナップ
     if (wasOnWall && feetY <= topY + 0.5 && player.pos.y + r >= topY - 0.1) {
+      if (attached && !wasOnRoof) releaseGrappleOnRoofLand();
       player.pos.y = roofY;
       player.vel.y = 0;
       groundedByRoof = true;
@@ -2491,7 +2557,7 @@ function stepPhysics(dt) {
         applyFastReelForce(h);
         tmp.copy(player.pos).sub(anchor).multiplyScalar(1 / len);
         const stretch = len - ropeLength;
-        if (stretch > 0) {
+        if (stretch > 0 && ropeLength > SPRING_MIN_LEN) {
           const radVel = player.vel.dot(tmp);
           const sf = THREE.MathUtils.clamp(ropeLength / SPRING_REF, 0.5, 10);
           const f = SPRING_K * sf * stretch + SPRING_DAMP * Math.sqrt(sf) * radVel;
@@ -2599,6 +2665,8 @@ function resetGame() {
   spaceQueued = false;
   spaceDownAt = 0;
   wallNX = 0; wallNZ = 0;
+  groundedByRoof = true;
+  groundedByFloor = false;
   resetWorld();
   player.pos.set(START_SLOT.wx, GROUND_Y + START_H + PLAYER_R, START_SLOT.wz);
   fillTrail();
