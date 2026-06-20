@@ -860,6 +860,8 @@ const TAP_MAX_MS = 280;
 const TAP_MOVE_TOLERANCE = 14;
 const DOUBLE_TAP_MS = 200;
 const DOUBLE_TAP_DIST = 36;
+const NEAR_PLAYER_SCREEN_R = 52;
+const MIN_SAME_SURFACE_ANCHOR_DIST = 2.6;
 const FAST_REEL_THRESHOLD = 0.55;
 
 const touchKeys = { w: false, s: false, a: false, d: false, fastReel: false };
@@ -897,6 +899,11 @@ function isWithinDoubleTapWindow(clientX, clientY, now = performance.now()) {
 }
 
 function mobileTapFire(clientX, clientY) {
+  if (isNearPlayerTap(clientX, clientY)) {
+    cancelMobileGrapple();
+    leftMouseHeld = false;
+    return;
+  }
   if (attached) release();
   if (anchorPhase !== 'idle') resetAnchorProjectile();
   leftMouseHeld = true;
@@ -1083,6 +1090,15 @@ function handleMobileTapRelease(p, clientX, clientY) {
   mobileTapFire(p.startX, p.startY);
 }
 
+function screenDistToPlayer(clientX, clientY) {
+  worldToScreen(player.pos, _playerScr);
+  return Math.hypot(clientX - _playerScr.x, clientY - _playerScr.y);
+}
+
+function isTapNearPlayerScreen(clientX, clientY) {
+  return screenDistToPlayer(clientX, clientY) <= NEAR_PLAYER_SCREEN_R;
+}
+
 function isQuickTap(p) {
   const elapsed = performance.now() - p.startTime;
   return !p.slid
@@ -1091,6 +1107,11 @@ function isQuickTap(p) {
 }
 
 function beginAnchorHold(clientX, clientY) {
+  if (isNearPlayerTap(clientX, clientY)) {
+    cancelMobileGrapple();
+    leftMouseHeld = false;
+    return;
+  }
   leftMouseHeld = true;
   onWall = false;
   if (!attached && anchorPhase === 'idle') fireAnchorProjectile(clientX, clientY);
@@ -1286,6 +1307,11 @@ function completeAttachFromHit(hit) {
     attachFaceNormal.copy(hit.normal);
     fireAnchor.copy(hit.point).addScaledVector(attachFaceNormal, 0.04);
   }
+  if (isAnchorOnCurrentSurface(anchor)
+      && surfaceDistToPlayer(anchor) < MIN_SAME_SURFACE_ANCHOR_DIST) {
+    beginAnchorReturn(true);
+    return;
+  }
   anchor.copy(fireAnchor);
   ropeLength = player.pos.distanceTo(anchor);
   if (!isAnchorOnCurrentSurface(anchor)) {
@@ -1363,6 +1389,9 @@ function updateAnchorProjectile(dt) {
 
 function fireAnchorProjectile(clientX, clientY) {
   if (anchorPhase !== 'idle' || attached) return;
+  const hit = aimHit(clientX, clientY, ANCHOR_RANGE);
+  if (hit && isAnchorOnCurrentSurface(hit.point)
+      && surfaceDistToPlayer(hit.point) < MIN_SAME_SURFACE_ANCHOR_DIST) return;
   aimDirection(clientX, clientY, projectileDir);
   projectileStart.copy(player.pos);
   projectilePos.copy(player.pos).addScaledVector(projectileDir, PLAYER_R + 0.35);
@@ -1392,7 +1421,8 @@ function isAnchorOnCurrentSurface(p) {
     }
   }
 
-  if (onWall) {
+  if (isWallAdhered() || lastWallAdhered) {
+    if (wallNX === 0 && wallNZ === 0) return false;
     const ext = wallHalf;
     const playerPlane = (player.pos.x - wallAnchorX) * wallNX + (player.pos.z - wallAnchorZ) * wallNZ;
     const anchorPlane = (p.x - wallAnchorX) * wallNX + (p.z - wallAnchorZ) * wallNZ;
@@ -1401,6 +1431,31 @@ function isAnchorOnCurrentSurface(p) {
   }
 
   return false;
+}
+
+function surfaceDistToPlayer(p) {
+  if (groundedByFloor && p.y <= GROUND_Y + 0.55) {
+    return Math.hypot(p.x - player.pos.x, p.z - player.pos.z);
+  }
+  if (groundedByRoof) {
+    return Math.hypot(p.x - player.pos.x, p.z - player.pos.z);
+  }
+  if ((isWallAdhered() || lastWallAdhered) && (wallNX !== 0 || wallNZ !== 0)) {
+    if (wallNX !== 0) return Math.hypot(p.z - player.pos.z, p.y - player.pos.y);
+    return Math.hypot(p.x - player.pos.x, p.y - player.pos.y);
+  }
+  return player.pos.distanceTo(p);
+}
+
+function isSameSurfaceTooClose(clientX, clientY) {
+  const hit = aimHit(clientX, clientY, ANCHOR_RANGE);
+  if (!hit) return false;
+  return isAnchorOnCurrentSurface(hit.point)
+    && surfaceDistToPlayer(hit.point) < MIN_SAME_SURFACE_ANCHOR_DIST;
+}
+
+function isNearPlayerTap(clientX, clientY) {
+  return isTapNearPlayerScreen(clientX, clientY) || isSameSurfaceTooClose(clientX, clientY);
 }
 function release() {
   attached = false;
