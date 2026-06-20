@@ -902,19 +902,19 @@ function isWithinDoubleTapWindow(clientX, clientY, now = performance.now()) {
 
 function mobileTapFire(clientX, clientY) {
   if (isNearPlayerTap(clientX, clientY)) {
-    if (attached) release();
-    leftMouseHeld = false;
+    if (isMobileGrappling()) cancelMobileGrapple();
+    else leftMouseHeld = false;
     return;
   }
-  if (!tapHitsSurface(clientX, clientY)) {
-    if (attached) {
-      release();
-      leftMouseHeld = false;
-    }
+  if (!tapHitsSurface(clientX, clientY) && isMobileGrappling()) {
+    cancelMobileGrapple();
     return;
   }
   if (anchorPhase !== 'idle') return;
-  if (attached) release();
+  if (attached) {
+    cancelMobileGrapple();
+    return;
+  }
   leftMouseHeld = true;
   onWall = false;
   fireAnchorProjectile(clientX, clientY);
@@ -924,8 +924,21 @@ function isMobileGrappling() {
   return attached || anchorPhase === 'out';
 }
 
+function startAnchorReturnFromGrapple() {
+  if (!attached) return;
+  attached = false;
+  attachObject = null;
+  _prevVel.copy(player.vel);
+  projectilePos.copy(anchor);
+  anchorMark.position.copy(anchor);
+  anchorPhase = 'return';
+  wire.visible = true;
+  anchorMark.visible = true;
+}
+
 function cancelMobileGrapple() {
-  if (attached) release();
+  if (attached) startAnchorReturnFromGrapple();
+  else if (anchorPhase === 'out') beginAnchorReturn(false);
   leftMouseHeld = false;
 }
 
@@ -1127,25 +1140,33 @@ function isQuickTap(p) {
 
 function beginAnchorHold(clientX, clientY) {
   if (isNearPlayerTap(clientX, clientY)) {
-    if (attached) release();
-    leftMouseHeld = false;
+    if (isMobileGrappling()) cancelMobileGrapple();
+    else leftMouseHeld = false;
     return;
   }
   if (!tapHitsSurface(clientX, clientY)) {
-    if (attached) cancelMobileGrapple();
-    leftMouseHeld = false;
+    if (isMobileGrappling()) cancelMobileGrapple();
+    else if (anchorPhase === 'idle' && !attached) {
+      leftMouseHeld = true;
+      onWall = false;
+      fireAnchorProjectile(clientX, clientY);
+    }
     return;
   }
   if (anchorPhase !== 'idle') return;
+  if (attached) {
+    cancelMobileGrapple();
+    return;
+  }
   leftMouseHeld = true;
   onWall = false;
-  if (!attached && anchorPhase === 'idle') fireAnchorProjectile(clientX, clientY);
+  fireAnchorProjectile(clientX, clientY);
 }
 
 function endAnchorHold() {
   leftMouseHeld = false;
   if (anchorPhase === 'out') beginAnchorReturn(false);
-  else if (attached) release();
+  else if (attached) startAnchorReturnFromGrapple();
 }
 
 function isUiTarget(el) {
@@ -1419,7 +1440,6 @@ function updateAnchorProjectile(dt) {
 function fireAnchorProjectile(clientX, clientY) {
   if (anchorPhase !== 'idle' || attached) return;
   const hit = aimHit(clientX, clientY, ANCHOR_RANGE);
-  if (!hit) return;
   if (hit && isAnchorOnCurrentSurface(hit.point)
       && surfaceDistToPlayer(hit.point) < MIN_SAME_SURFACE_ANCHOR_DIST) return;
   aimDirection(clientX, clientY, projectileDir);
@@ -1528,8 +1548,8 @@ function handleMobilePointerDown(e) {
   mouse.y = e.clientY;
 
   if (activePointers.size === 1 && isWithinDoubleTapWindow(e.clientX, e.clientY, now)) {
-    if (attached) release();
-    leftMouseHeld = false;
+    if (isMobileGrappling()) cancelMobileGrapple();
+    else leftMouseHeld = false;
     const entry = activePointers.get(e.pointerId);
     if (entry) {
       entry.awaitDoubleTap = true;
