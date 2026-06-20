@@ -2104,40 +2104,9 @@ function canAttachToWall(feetY, topY) {
 
 const CORNER_WALL_KICK_ZONE = WALL_SKIN * 3.5;
 
-// ビルの角に到達したら壁蹴りで離脱（意図しない角吸着を防ぐ）
-function tryCornerWallKick(b, half, ox, oz, dx, dz, wasOnWall) {
-  if (wallDetachTimer > 0 || leftMouseHeld) return false;
-  if (groundedByRoof || groundedByFloor) return false;
-
-  const ext = half + PLAYER_R;
-  const cornerZone = CORNER_WALL_KICK_ZONE;
-  const onSameBuilding = wallAnchorX === b.position.x && wallAnchorZ === b.position.z;
-  const adhered = wasOnWall || lastWallAdhered;
-
-  // 角の nook（両側面が同時に近い）
-  const inCornerNook = ox > -WALL_SKIN && oz > -WALL_SKIN && ox < cornerZone && oz < cornerZone;
-  if (inCornerNook && adhered) {
-    tmp.set(dx, 0, dz);
-    if (tmp.lengthSq() < 1e-8) tmp.set(wallNX, 0, wallNZ);
-    wallKickJump(tmp.x, tmp.z);
-    return true;
-  }
-
-  if (!wasOnWall || !onSameBuilding) return false;
-
-  // 壁面の端へ到達（走行方向の角）
-  if (wallNX !== 0) {
-    if (ox > -WALL_SKIN && Math.abs(dz) > ext - cornerZone) {
-      wallKickJump();
-      return true;
-    }
-  } else if (wallNZ !== 0) {
-    if (oz > -WALL_SKIN && Math.abs(dx) > ext - cornerZone) {
-      wallKickJump();
-      return true;
-    }
-  }
-  return false;
+function isBuildingCorner(ox, oz) {
+  const z = CORNER_WALL_KICK_ZONE;
+  return ox > -WALL_SKIN && oz > -WALL_SKIN && ox < z && oz < z;
 }
 
 // 前フレームの壁に近ければ張り付きを維持
@@ -2149,6 +2118,9 @@ function tryKeepWallStick() {
   const ext = wallHalf + PLAYER_R;
   const dx = player.pos.x - wallAnchorX;
   const dz = player.pos.z - wallAnchorZ;
+  const ox = ext - Math.abs(dx);
+  const oz = ext - Math.abs(dz);
+  if (isBuildingCorner(ox, oz)) return false;
   if (wallNX !== 0) {
     if (Math.abs(dz) > ext + WALL_SKIN) return false;
     if (Math.abs(Math.abs(dx) - ext) > WALL_SKIN * 2) return false;
@@ -2206,7 +2178,7 @@ function resolveCollisions(h) {
     if (ox > -WALL_SKIN && oz > -WALL_SKIN && canAttachToWall(feetY, topY)) {
       // 壁蹴り離脱中は再吸着・位置スナップ・摩擦をかけない
       if (wallDetachTimer > 0 && !leftMouseHeld) continue;
-      if (tryCornerWallKick(b, half, ox, oz, dx, dz, wasOnWall)) continue;
+      if (isBuildingCorner(ox, oz)) continue;
       const depth = Math.min(ox + WALL_SKIN, oz + WALL_SKIN);
       if (depth <= 0) continue;
       const { nx, nz } = wallNormalFromPenetration(dx, dz, ox, oz);
@@ -2248,9 +2220,7 @@ function resolveCollisions(h) {
     const faceChanged = wasOnWall
       && wallAnchorX === bestWall.bx && wallAnchorZ === bestWall.bz
       && (bestWall.nx !== wallNX || bestWall.nz !== wallNZ);
-    if (faceChanged) {
-      wallKickJump(wallNX + bestWall.nx, wallNZ + bestWall.nz);
-    } else {
+    if (!faceChanged) {
       onWall = true;
       wallNX = bestWall.nx;
       wallNZ = bestWall.nz;
@@ -2392,7 +2362,8 @@ function snapCameraToPlayer() {
   const picked = pickCameraYaw(chaseYaw, camPitch, camFocus, frameDist);
   chaseYaw = camYaw = smoothCamYaw = picked.yaw;
   buildCameraDir(smoothCamYaw, camPitch, camDir);
-  camTarget.copy(camFocus).addScaledVector(camDir, picked.dist);
+  const snapDist = cameraDistAboveGround(camFocus, camDir, picked.dist);
+  camTarget.copy(camFocus).addScaledVector(camDir, snapDist);
   camera.position.copy(camTarget);
   clampCameraAboveGround();
   camera.lookAt(camFocus);
@@ -2562,11 +2533,26 @@ function isFreeFalling() {
   return player.pos.y > FLOOR + 0.15;
 }
 
+function cameraDistAboveGround(focus, dir, maxDist) {
+  const minY = GROUND_Y + CAM_GROUND_CLEAR;
+  let lo = CAM_MIN_DIST;
+  let hi = Math.max(CAM_MIN_DIST, maxDist);
+  _camRayDir.copy(dir);
+  const dlen = _camRayDir.length();
+  if (dlen < 1e-6) return hi;
+  _camRayDir.multiplyScalar(1 / dlen);
+  if (focus.y + _camRayDir.y * hi >= minY) return hi;
+  for (let i = 0; i < 14; i++) {
+    const mid = (lo + hi) * 0.5;
+    if (focus.y + _camRayDir.y * mid >= minY) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
 function clampCameraAboveGround() {
   const minY = GROUND_Y + CAM_GROUND_CLEAR;
-  if (camFocus.y < minY) camFocus.y = minY;
   if (camera.position.y < minY) camera.position.y = minY;
-  if (camTarget.y < minY) camTarget.y = minY;
 }
 
 function updateCamera(dt) {
@@ -2623,11 +2609,12 @@ function updateCamera(dt) {
   else smoothCamYaw = aimYaw;
 
   buildCameraDir(aimYaw, camPitch, camDir);
-  const safeDist = freeLook
+  let useDist = freeLook
     ? cameraClearDist(camFocus, camDir, frameDist)
     : picked.dist;
+  useDist = cameraDistAboveGround(camFocus, camDir, useDist);
 
-  camTarget.copy(camFocus).addScaledVector(camDir, safeDist);
+  camTarget.copy(camFocus).addScaledVector(camDir, useDist);
   camera.position.lerp(camTarget, Math.min(1, dt * 4));
   clampCameraAboveGround();
   camera.lookAt(camFocus);
