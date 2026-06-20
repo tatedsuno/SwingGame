@@ -2047,6 +2047,8 @@ function resolveWallContactFriction(nx, nz, staticRegime, h) {
     player.vel.x -= vn * nx;
     player.vel.z -= vn * nz;
   }
+  // グラップ中は壁摩擦ゼロ（法線方向のめり込み防止のみ）
+  if (attached) return;
   // 走行入力中は地面と同様に摩擦減速しない（張り付き＋加速のみ）
   if (staticRegime && hasMoveInput()) return;
   const mu = staticRegime ? MU_STATIC : MU_DYNAMIC;
